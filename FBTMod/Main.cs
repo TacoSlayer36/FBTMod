@@ -5,11 +5,16 @@ using System.IO;
 using System.Linq;
 using Il2CppRUMBLE.Managers;
 using Il2CppRUMBLE.Players;
+using Il2CppRUMBLE.Players.Scaling;
 using Il2CppRUMBLE.Tutorial.MoveLearning;
 using MelonLoader;
+using ReplayMod.Replay;
 using RumbleModdingAPI.RMAPI;
 using UIFramework;
 using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.XR.OpenXR;
+using UnityEngine.XR.OpenXR.Input;
 using Valve.VR;
 using AudioManager = Il2CppRUMBLE.Managers.AudioManager;
 using Main = FBTMod.Main;
@@ -23,11 +28,22 @@ namespace FBTMod
 {
     public class Main : MelonMod
     {
-        public Main instance;
+        public static float AA_Blink = -110f;
+        public static float AA_Blink2 = -65f;
+        public static float AA_X = 90f;
+        public static float AA_Y = 0f;
+        public static float AA_Z = 0f;
+
+        public static Main instance;
         public Main() => instance = this;
 
-        public static Player LocalPlayer => PlayerManager.instance.LocalPlayer;
+        public static bool globalInit = false;
+
+        public static Player LocalPlayer => PlayerManager.instance?.LocalPlayer;
         public static Transform referenceSkeleton;
+
+        private static Transform modParent;
+        private static Transform trackersParent;
         
         public CVRSystem vrSystem;
 
@@ -78,7 +94,7 @@ namespace FBTMod
         private GameObject[] debugSpheres = new GameObject[64];
         
         private Dictionary<TrackerRole, TrackerCalibration> trackerOffsets = new();
-        private Dictionary<TrackerRole, Pose> runtimeTrackerTransforms = new();
+        internal Dictionary<TrackerRole, Pose> runtimeTrackerTransforms = new();
         
         // Custom Poses
         public class FootPoseDefinition
@@ -114,11 +130,19 @@ namespace FBTMod
 
         private List<FootPoseSequence> customPoses = new();
         private List<FootPoseDefinition> currentRecordedPose = new();
-        
+
+        // ReplayMod Support
+
+        private ReplayExtension mod;
+
         // SETTINGS
-        private MelonPreferences_Category Settings;
+        private MelonPreferences_Category BodySettings;
+        private MelonPreferences_Category EyeSettings;
 
         private MelonPreferences_Entry NewMoveName;
+        private MelonPreferences_Entry<bool> EnableEyeTracking;
+        private MelonPreferences_Entry<bool> ShowTrackingMarkers;
+        public static MelonPreferences_Entry<bool> ShowGazeVisualizer;
 
         private const int LEG_SOLVE_ITERATIONS = 3;
         
@@ -140,12 +164,16 @@ namespace FBTMod
         {
             // Doesn't create it if it already exists
             Directory.CreateDirectory(USER_DATA);
+
+            modParent = new GameObject("FBTMod").transform;
+            GameObject.DontDestroyOnLoad(modParent.gameObject);
+
+            // Create UI
+            BodySettings = MelonPreferences.CreateCategory("FBTMod_FullBodySettings", "Full-Body Tracking");
+            BodySettings.SetFilePath(Path.Combine(USER_DATA, CONFIG_FILE));
             
-            Settings = MelonPreferences.CreateCategory("FBTMod_Settings", "Full-Body Tracking");
-            Settings.SetFilePath(Path.Combine(USER_DATA, CONFIG_FILE));
-            
-            UI.CreateButtonEntry(Settings, "Calibrate", "Calibrate", 
-                "Starts FBT Calibration. Line yourself up with the shown pose, then pres both triggers to confirm.",
+            UI.CreateButtonEntry(BodySettings, "Calibrate", "Calibrate", 
+                "Starts FBT Calibration. Line yourself up with the shown pose, then press both triggers to confirm.",
                 () =>
                 {
                     if (!isCalibrating)
@@ -153,9 +181,9 @@ namespace FBTMod
                 }
             );
 
-            NewMoveName = Settings.CreateEntry("FBT_NewMoveName", "Straight", "New Move Name", "An existing rumble move name for your sequence to activate.");
+            NewMoveName = BodySettings.CreateEntry("FBT_NewMoveName", "Straight", "New Move Name", "An existing rumble move name for your sequence to activate.");
             
-            UI.CreateButtonEntry(Settings, "Add Current Pose", "Add Current Pose",
+            UI.CreateButtonEntry(BodySettings, "Add Current Pose", "Add Current Pose",
                 "Adds the current pose of your feet to the sequence.",
                 () =>
                 {
@@ -168,7 +196,7 @@ namespace FBTMod
                     currentRecordedPose.Add(CreateFootPoseFromCurrentFeet());
                 });
             
-            UI.CreateButtonEntry(Settings, "Save Current Sequence", "Save Current Sequence",
+            UI.CreateButtonEntry(BodySettings, "Save Current Sequence", "Save Current Sequence",
                 "Saves the current sequence of poses to allow you to hit the custom sequence. Clears stored sequence.",
                 () =>
                 {
@@ -215,14 +243,48 @@ namespace FBTMod
                     }
                 });
             
-            UI.CreateButtonEntry(Settings, "Clear Poses", "Clear Poses",
+            UI.CreateButtonEntry(BodySettings, "Clear Poses", "Clear Poses",
                 "Clears all custom poses.",
                 () =>
                 {
                     customPoses.Clear();
                 });
 
-            UI.RegisterMelon(this, Settings);
+            ShowTrackingMarkers = BodySettings.CreateEntry("FBT_ShowTrackingMarkers", true, "Show Tracking Markers", "Show spheres at the location of each body tracker.");
+
+            EyeSettings = MelonPreferences.CreateCategory("FBTMod_EyeSettings", "Eye Tracking");
+            EyeSettings.SetFilePath(Path.Combine(USER_DATA, CONFIG_FILE));
+
+            EnableEyeTracking = EyeSettings.CreateEntry("FBT_EnableEyeTracking", true, "Enable Eye Tracking", "Use eye tracking if your hardware supports it.");
+            ShowGazeVisualizer = EyeSettings.CreateEntry("FBT_ShowGazeVisualizer", true, "Show Gaze Visualizer", "Show an indicator of where you are looking on the Legacy Camera.");
+
+            UI.RegisterMelon(this, BodySettings, EyeSettings);
+
+            // Create tracking spheres
+            trackersParent = new GameObject("TrackerSpheres").transform;
+            trackersParent.SetParent(modParent);
+            for (int i = 0; i < debugSpheres.Length; i++)
+            {
+                GameObject trackerSphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                trackerSphere.GetComponent<Renderer>().material = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+                Object.Destroy(trackerSphere.GetComponent<Collider>());
+                trackerSphere.transform.localScale = Vector3.one * 0.2f;
+                trackerSphere.transform.SetParent(trackersParent);
+                trackerSphere.SetActive(ShowTrackingMarkers.Value);
+                debugSpheres[i] = trackerSphere;
+            }
+
+            EnableEyeTracking.OnEntryValueChanged.Subscribe(onEnableEyeTrackingToggled);
+
+            // Load gaze visualizer from asset bundle
+            EyeTracking.GazeVisualizerPanel = GameObject.Instantiate(AssetBundles.LoadAssetFromStream<GameObject>(this, "FBTMod.assets.fbt", "GazeVisualizer"));
+            EyeTracking.GazeVisualizerPanel.transform.SetParent(modParent);
+            EyeTracking.GazeVisualizerMat = EyeTracking.GazeVisualizerPanel.GetComponentInChildren<Image>().material;
+            EyeTracking.GazeVisualizerPanel.SetActive(false);
+
+            ShowTrackingMarkers.OnEntryValueChanged.Subscribe(onShowTrackersToggled);
+
+            ShowGazeVisualizer.OnEntryValueChanged.Subscribe(onShowGazeVisualizerToggled);
 
             EVRInitError error = EVRInitError.None;
             vrSystem = OpenVR.Init(ref error, EVRApplicationType.VRApplication_Other);
@@ -235,6 +297,9 @@ namespace FBTMod
             }
 
             LoggerInstance.Msg("[FBT] OpenVR initialized.");
+
+            // ReplayMod
+            mod = ReplayAPI.RegisterExtension(new )
         }
 
         public override void OnApplicationQuit()
@@ -253,20 +318,17 @@ namespace FBTMod
             trackerOffsets.Clear();
             runtimeTrackerTransforms.Clear();
 
-            for (int i = 0; i < debugSpheres.Length; i++)
-            {
-                GameObject trackerSphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                trackerSphere.GetComponent<Renderer>().material = new Material(Shader.Find("Universal Render Pipeline/Lit"));
-                Object.Destroy(trackerSphere.GetComponent<Collider>());
-                trackerSphere.transform.localScale = Vector3.one * 0.2f;
-                debugSpheres[i] = trackerSphere;
-            }
-
             isCalibrating = false;
             isCalibrated = false;
 
             leftLegSolver = null;
             rightLegSolver = null;
+
+            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "Gym")
+            {
+                if (EnableEyeTracking.Value) EyeTracking.Start();
+                globalInit = true;
+            }
         }
 
         public static void EnsureStaticObjects()
@@ -281,8 +343,8 @@ namespace FBTMod
             Transform visuals = templateController.PlayerVisuals.transform;
 
             referenceSkeleton = GameObject.Instantiate(visuals.GetChild(1).gameObject).transform;
-            referenceSkeleton.name = "FBT_ReferenceSkeleton";
-            Object.DontDestroyOnLoad(referenceSkeleton.gameObject);
+            referenceSkeleton.name = "ReferenceSkeleton";
+            referenceSkeleton.SetParent(modParent);
         }
 
         // T-Pose
@@ -719,16 +781,68 @@ namespace FBTMod
                 hipsBone.position = Vector3.Lerp(hipsBone.position, transform.position, HIP_POSITION_WEIGHT);
                 hipsBone.rotation = Quaternion.Slerp(hipsBone.rotation, transform.rotation, HIP_ROTATION_WEIGHT);
             }
-
             if (runtimeTrackerTransforms.TryGetValue(TrackerRole.Chest, out transform))
             {
                 var chestBone = animator.GetBoneTransform(HumanBodyBones.Chest);
                 chestBone.rotation = Quaternion.Slerp(chestBone.rotation, transform.rotation, CHEST_ROTATION_WEIGHT);
             }
         }
-        
+
+        private void ApplyEyeTracking()
+        {
+            if (LocalPlayer?.Controller == null) return;
+
+            var boneDefinitions = LocalPlayer.Controller.PlayerVisuals.GetComponent<RigDefinition>().boneDefinitions;
+
+            if (EnableEyeTracking.Value && EyeTracking.IsReceivingData)
+            {
+                var leftEyeBone = boneDefinitions[32].Transform;
+                leftEyeBone.localRotation = EyeTracking.GetLeftEyeRot() * Quaternion.Euler(AA_X, AA_Y, AA_Z);
+
+                var rightEyeBone = boneDefinitions[33].Transform;
+                rightEyeBone.localRotation = EyeTracking.GetRightEyeRot() * Quaternion.Euler(AA_X, AA_Y, AA_Z);
+
+                {
+                    var leftEyelidBone = boneDefinitions[27].Transform;
+                    Quaternion closedRot = Quaternion.Euler(AA_Blink2, leftEyelidBone.localEulerAngles.y, leftEyelidBone.localEulerAngles.z);
+                    Quaternion openRot = Quaternion.Euler(AA_Blink, leftEyelidBone.localEulerAngles.y, leftEyelidBone.localEulerAngles.z);
+                    leftEyelidBone.localRotation = Quaternion.Slerp(openRot, closedRot, EyeTracking.CloseAmount);
+                }
+
+                {
+                    var rightEyelidBone = boneDefinitions[28].Transform;
+                    Quaternion closedRot = Quaternion.Euler(AA_Blink2, rightEyelidBone.localEulerAngles.y, rightEyelidBone.localEulerAngles.z);
+                    Quaternion openRot = Quaternion.Euler(AA_Blink, rightEyelidBone.localEulerAngles.y, rightEyelidBone.localEulerAngles.z);
+                    rightEyelidBone.localRotation = Quaternion.Slerp(openRot, closedRot, EyeTracking.CloseAmount);
+                }
+            }
+
+            /*
+             * Lower L: 21
+             * Lower R: 22
+             * Upper L: 27
+             * Upper R: 28
+             */
+        }
+
+        private void onEnableEyeTrackingToggled(bool _, bool newValue)
+        {
+            if (newValue) EyeTracking.Start();
+            else EyeTracking.Stop();
+        }
+        private void onShowTrackersToggled(bool _, bool newValue)
+        {
+            trackersParent?.gameObject?.SetActive(newValue);
+        }
+        private void onShowGazeVisualizerToggled(bool _, bool newValue)
+        {
+            EyeTracking.GazeVisualizerPanel?.SetActive(newValue);
+        }
+
         public override void OnUpdate()
         {
+            EyeTracking.Update();
+
             if (vrSystem == null || LocalPlayer?.Controller == null)
                 return;
             
@@ -789,6 +903,8 @@ namespace FBTMod
 
         public override void OnLateUpdate()
         {
+            ApplyEyeTracking();
+
             if (!isCalibrated || isCalibrating)
                 return;
 
