@@ -252,6 +252,8 @@ namespace FBTMod
 
             ShowTrackingMarkers = BodySettings.CreateEntry("FBT_ShowTrackingMarkers", true, "Show Tracking Markers", "Show spheres at the location of each body tracker.");
 
+            ReplayModExtension.RecordFBT = BodySettings.CreateEntry("FBT_RecordFBT", true, "Record FBT", "Record FBT in ReplayMod");
+
             EyeSettings = MelonPreferences.CreateCategory("FBTMod_EyeSettings", "Eye Tracking");
             EyeSettings.SetFilePath(Path.Combine(USER_DATA, CONFIG_FILE));
 
@@ -297,9 +299,16 @@ namespace FBTMod
             }
 
             LoggerInstance.Msg("[FBT] OpenVR initialized.");
+        }
 
+        public override void OnEarlyInitializeMelon()
+        {
             // ReplayMod
-            mod = ReplayAPI.RegisterExtension(new )
+            mod = ReplayAPI.RegisterExtension(new ReplayModExtension.FBTExtension());
+
+            ReplayAPI.onReplayEnded += _ => {
+                ReplayModExtension.lastState = null;
+            };
         }
 
         public override void OnApplicationQuit()

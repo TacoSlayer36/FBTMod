@@ -1,84 +1,56 @@
-﻿using System.IO;
-using MelonLoader;
+﻿using MelonLoader;
+using ReplayMod;
 using ReplayMod.Replay;
 using ReplayMod.Replay.Serialization;
+using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
+using static FBTMod.Main;
 
-namespace ReplayMod.docs.Extensions;
+namespace FBTMod;
 
-public class ExampleMod : MelonMod
+public class ReplayModExtension
 {
     // This example demonstrates how to extend replays by recording
     // and replaying a scene object (in this case, the Park bell [RIP]).
 
-    public static ExampleMod instance;
-    public ExampleMod() => instance = this;
+    public static ReplayModExtension instance;
+    public ReplayModExtension() => instance = this;
 
     // Used when reading frames to allow state to carry forward from delta-compression
     // Delta-compression is not used in this example, but is highly recommended.
-    private static BellState lastState;
+    internal static FBTState lastState;
 
-    private ReplayExtension mod;
-
-    private static MelonPreferences_Entry<bool> recordBell;
-
-    public string currentScene = "Loader";
-
-    public override void OnLateInitializeMelon()
-    {
-        // The ID must remain the same or previously saved Replays
-        // will no longer associate with this extension.
-        mod = ReplayAPI.RegisterExtension(new BellExtension());
-
-        // Extensions can have their own settings.
-        recordBell = mod.Settings.CreateEntry("Record_Bell", true, "Record Bell", "Toggles whether the bell is recorded.");
-
-        ReplayAPI.onReplayEnded += _ => {
-            lastState = null;
-        };
-    }
-
-    public override void OnSceneWasLoaded(int buildIndex, string sceneName)
-    {
-        currentScene = sceneName;
-    }
+    internal static MelonPreferences_Entry<bool> RecordFBT;
 
     // Field identifiers used when writing frame data.
     // These values are serialized as byte tags and must remain in a stable order.
-    private enum BellField : byte
+    private enum FBTField : byte
     {
         Position,
         Rotation
     }
 
-    private class BellExtension : ReplayExtension
+    internal class FBTExtension : ReplayExtension
     {
-        public override string Id => "BellSupport";
+        public override string Id => "FBTSupport";
 
         public override void OnRecordFrame(Frame frame, bool isBuffer)
         {
-            if (instance.currentScene != "Park")
-                return;
-
-            if (!recordBell.Value)
-                return;
-
-            var bell = new GameObject("Bell"); /*GameObjects.Park.INTERACTABLES.Bell.GetGameObject();*/ // RIP Bell
-            if (bell == null)
+            if (!RecordFBT.Value)
                 return;
 
             // Capture transform state for this frame
-            frame.SetExtensionData(this, new BellState
+            frame.SetExtensionData(this, new FBTState
             {
-                Position = bell.transform.position,
-                Rotation = bell.transform.rotation
-            });
+                trackerTransforms = Main.instance.runtimeTrackerTransforms
+            }.Clone());
         }
 
         public override void OnWriteFrame(ReplayAPI.FrameExtensionWriter writer, Frame frame)
         {
             // If this frame has no recorded data, write nothing.
-            if (!frame.TryGetExtensionData(this, out BellState state))
+            if (!frame.TryGetExtensionData(this, out FBTState state))
                 return;
 
             /*
@@ -96,11 +68,15 @@ public class ExampleMod : MelonMod
              *     Always use the provided BinaryWriter.Write(field, value) overloads.
             */
 
-            writer.WriteChunk(0, w =>
+            foreach (var transform in state.trackerTransforms)
             {
-                w.Write(BellField.Position, state.Position);
-                w.Write(BellField.Rotation, state.Rotation);
-            });
+                //if (transform.Key is TrackerRole.RightFoot)
+                writer.WriteChunk((int)transform.Key, w =>
+                {
+                    w.Write(FBTField.Position, transform.Value.position);
+                    w.Write(FBTField.Rotation, transform.Value.rotation);
+                });
+            }
         }
 
         public override void OnReadFrame(BinaryReader br, Frame frame, int subIndex)
@@ -118,19 +94,25 @@ public class ExampleMod : MelonMod
              * Technically, the ctor function here is unnecessary due to our lack of delta-compression,
              * but it is highly recommended to do so.
              */
-            var state = ReplaySerializer.ReadChunk<BellState, BellField>(
+            //subIndex = (int)TrackerRole.RightFoot;
+            var state = ReplaySerializer.ReadChunk<FBTState, FBTField>(
                 br,
-                () => lastState?.Clone() ?? new BellState(),
+                () => lastState?.Clone() ?? new FBTState(),
                 (s, field, size, reader) =>
                 {
+                    if (!s.trackerTransforms.ContainsKey((TrackerRole)subIndex))
+                    {
+                        s.trackerTransforms[(TrackerRole)subIndex] = new Main.Pose { position = Vector3.zero, rotation = Quaternion.identity };
+                    }
+
                     switch (field)
                     {
-                        case BellField.Position:
-                            s.Position = reader.ReadVector3();
+                        case FBTField.Position:
+                            s.trackerTransforms[(TrackerRole)subIndex].position = reader.ReadVector3();
                             break;
 
-                        case BellField.Rotation:
-                            s.Rotation = reader.ReadQuaternion();
+                        case FBTField.Rotation:
+                            s.trackerTransforms[(TrackerRole)subIndex].rotation = reader.ReadQuaternion();
                             break;
                     }
                 });
@@ -142,35 +124,35 @@ public class ExampleMod : MelonMod
         // NextFrame should be used for interpolation, though that isn't implemented here.
         public override void OnPlaybackFrame(Frame frame, Frame nextFrame)
         {
-            if (instance.currentScene != "Park")
-                return;
-
-            if (!frame.TryGetExtensionData(this, out BellState state))
-                return;
-
-            var bell = new GameObject("Bell"); /*GameObjects.Park.INTERACTABLES.Bell.GetGameObject();*/ // RIP Bell;
-            if (bell == null)
+            if (!frame.TryGetExtensionData(this, out FBTState state))
                 return;
 
             // Apply reconstructed transform state to the live object.
-            bell.transform.position = state.Position;
-            bell.transform.rotation = state.Rotation;
+            MelonLogger.Msg(state.trackerTransforms[TrackerRole.RightFoot].position.y);
         }
     }
 
     // Simple container for bell transform state
-    private class BellState
+    internal class FBTState
     {
-        public Vector3 Position;
-        public Quaternion Rotation;
+        public Dictionary<TrackerRole, Main.Pose> trackerTransforms = new();
 
         // Used to preserve previous state during reconstruction.
-        public BellState Clone()
+        public FBTState Clone()
         {
-            return new BellState
+            Dictionary<TrackerRole, Main.Pose> newTransforms = new();
+            foreach (var transform in trackerTransforms)
             {
-                Position = Position,
-                Rotation = Rotation
+                newTransforms[transform.Key] = new Main.Pose()
+                {
+                    position = transform.Value.position,
+                    rotation = transform.Value.rotation
+                };
+            }
+
+            return new FBTState
+            {
+                trackerTransforms = newTransforms
             };
         }
     }
