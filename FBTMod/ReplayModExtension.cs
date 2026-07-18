@@ -1,18 +1,23 @@
-﻿using MelonLoader;
+﻿using Il2CppPlayFab.ClientModels;
+using Il2CppRUMBLE.Managers;
+using Il2CppRUMBLE.Players;
+using MelonLoader;
 using ReplayMod;
 using ReplayMod.Replay;
 using ReplayMod.Replay.Serialization;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using UnityEngine;
 using static FBTMod.Main;
+using PoseDict = System.Collections.Generic.Dictionary<FBTMod.Main.TrackerRole, FBTMod.Main.Pose>;
 
 namespace FBTMod;
 
 public class ReplayModExtension
 {
     // This example demonstrates how to extend replays by recording
-    // and replaying a scene object (in this case, the Park bell [RIP]).
+    // and replaying a scene object
 
     public static ReplayModExtension instance;
     public ReplayModExtension() => instance = this;
@@ -28,7 +33,8 @@ public class ReplayModExtension
     private enum FBTField : byte
     {
         Position,
-        Rotation
+        Rotation,
+        Id
     }
 
     internal class FBTExtension : ReplayExtension
@@ -40,10 +46,18 @@ public class ReplayModExtension
             if (!RecordFBT.Value)
                 return;
 
-            // Capture transform state for this frame
+            Dictionary<byte, PoseDict> transforms = new();
+            for (byte i = 0; i < ReplayMod.Core.Main.Recording.RecordedPlayers.Count; i++)
+            {
+                Player player = ReplayMod.Core.Main.Recording.RecordedPlayers[i];
+                if (player == null) return;
+                FullBodyTracking fbt = player.Controller.GetComponent<FullBodyTracking>();
+                transforms[i] = fbt.RuntimeTrackerTransforms;
+            }
+
             frame.SetExtensionData(this, new FBTState
             {
-                trackerTransforms = Main.instance.runtimeTrackerTransforms
+                TrackerTransforms = transforms
             }.Clone());
         }
 
@@ -68,14 +82,17 @@ public class ReplayModExtension
              *     Always use the provided BinaryWriter.Write(field, value) overloads.
             */
 
-            foreach (var transform in state.trackerTransforms)
+            foreach (var (ownerId, poseDict) in state.TrackerTransforms)
             {
-                //if (transform.Key is TrackerRole.RightFoot)
-                writer.WriteChunk((int)transform.Key, w =>
+                foreach (var transform in poseDict)
                 {
-                    w.Write(FBTField.Position, transform.Value.position);
-                    w.Write(FBTField.Rotation, transform.Value.rotation);
-                });
+                    var subIndex = (ownerId << 8) | (int)transform.Key;
+                    writer.WriteChunk(subIndex, w =>
+                    {
+                        w.Write(FBTField.Position, transform.Value.position);
+                        w.Write(FBTField.Rotation, transform.Value.rotation);
+                    });
+                }
             }
         }
 
@@ -94,25 +111,39 @@ public class ReplayModExtension
              * Technically, the ctor function here is unnecessary due to our lack of delta-compression,
              * but it is highly recommended to do so.
              */
-            //subIndex = (int)TrackerRole.RightFoot;
+            
             var state = ReplaySerializer.ReadChunk<FBTState, FBTField>(
                 br,
                 () => lastState?.Clone() ?? new FBTState(),
                 (s, field, size, reader) =>
                 {
-                    if (!s.trackerTransforms.ContainsKey((TrackerRole)subIndex))
+                    var ownerId = (subIndex >> 8) & 0xff;
+                    var trackerRole = (subIndex) & 0xff;
+
+                    if (!s.TrackerTransforms.ContainsKey((byte)ownerId))
                     {
-                        s.trackerTransforms[(TrackerRole)subIndex] = new Main.Pose { position = Vector3.zero, rotation = Quaternion.identity };
+                        s.TrackerTransforms[(byte)ownerId] = new PoseDict();
+                    }
+
+                    var poseDict = s.TrackerTransforms[(byte)ownerId];
+
+                    if (!poseDict.ContainsKey((TrackerRole)trackerRole))
+                    {
+                        poseDict[(TrackerRole)trackerRole] = new Main.Pose
+                        {
+                            position = Vector3.zero,
+                            rotation = Quaternion.identity
+                        };
                     }
 
                     switch (field)
                     {
                         case FBTField.Position:
-                            s.trackerTransforms[(TrackerRole)subIndex].position = reader.ReadVector3();
+                            poseDict[(TrackerRole)trackerRole].position = reader.ReadVector3();
                             break;
 
                         case FBTField.Rotation:
-                            s.trackerTransforms[(TrackerRole)subIndex].rotation = reader.ReadQuaternion();
+                            poseDict[(TrackerRole)trackerRole].rotation = reader.ReadQuaternion();
                             break;
                     }
                 });
@@ -127,32 +158,46 @@ public class ReplayModExtension
             if (!frame.TryGetExtensionData(this, out FBTState state))
                 return;
 
-            // Apply reconstructed transform state to the live object.
-            MelonLogger.Msg(state.trackerTransforms[TrackerRole.RightFoot].position.y);
+            if (state == null) return;
+
+            foreach (var (ownerId, poseDict) in state.TrackerTransforms)
+            {
+                PlayerController player = ReplayMod.Core.Main.Playback.PlaybackPlayers[ownerId].Controller;
+                FullBodyTracking fbt = player.GetComponent<FullBodyTracking>();
+                if (fbt == null || fbt.Type is not FullBodyTracking.FBTType.Animated) return;
+                if (fbt.LeftLegSolver == null || fbt.RightLegSolver == null) return;
+                fbt.RuntimeTrackerTransforms = poseDict;
+                fbt.LeftLegSolver.FootTarget = poseDict[TrackerRole.LeftFoot];
+                fbt.RightLegSolver.FootTarget = poseDict[TrackerRole.RightFoot];
+            }
         }
     }
 
-    // Simple container for bell transform state
     internal class FBTState
     {
-        public Dictionary<TrackerRole, Main.Pose> trackerTransforms = new();
+        public Dictionary<byte, PoseDict> TrackerTransforms = new();
 
         // Used to preserve previous state during reconstruction.
         public FBTState Clone()
         {
-            Dictionary<TrackerRole, Main.Pose> newTransforms = new();
-            foreach (var transform in trackerTransforms)
+            Dictionary<byte, PoseDict> newTransforms = new();
+            foreach (var (ownerId, poseDict) in TrackerTransforms)
             {
-                newTransforms[transform.Key] = new Main.Pose()
+                Dictionary<TrackerRole, Main.Pose> newPoseDict = new();
+                foreach (var transform in poseDict)
                 {
-                    position = transform.Value.position,
-                    rotation = transform.Value.rotation
-                };
+                    newPoseDict[transform.Key] = new Main.Pose()
+                    {
+                        position = transform.Value.position,
+                        rotation = transform.Value.rotation
+                    };
+                }
+                newTransforms[ownerId] = newPoseDict;
             }
 
             return new FBTState
             {
-                trackerTransforms = newTransforms
+                TrackerTransforms = newTransforms
             };
         }
     }

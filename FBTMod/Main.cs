@@ -1,28 +1,21 @@
-using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Il2CppRUMBLE.Managers;
 using Il2CppRUMBLE.Players;
-using Il2CppRUMBLE.Players.Scaling;
-using Il2CppRUMBLE.Tutorial.MoveLearning;
 using MelonLoader;
 using ReplayMod.Replay;
 using RumbleModdingAPI.RMAPI;
-using UIFramework;
 using UnityEngine;
 using UnityEngine.UI;
-using UnityEngine.XR.OpenXR;
-using UnityEngine.XR.OpenXR.Input;
 using Valve.VR;
-using AudioManager = Il2CppRUMBLE.Managers.AudioManager;
 using Main = FBTMod.Main;
-using Object = UnityEngine.Object;
 
 [assembly: MelonInfo(typeof(Main), "FBTMod", "1.0.0", "ERROR")]
 [assembly: MelonGame("Buckethead Entertainment", "RUMBLE")]
 [assembly: MelonAdditionalDependencies("UIFramework")]
+[assembly: MelonColor(255, 255, 0, 0), MelonAuthorColor(255, 255, 0, 0)]
 
 namespace FBTMod
 {
@@ -40,19 +33,23 @@ namespace FBTMod
         public static bool globalInit = false;
 
         public static Player LocalPlayer => PlayerManager.instance?.LocalPlayer;
-        public static Transform referenceSkeleton;
 
         private static Transform modParent;
-        private static Transform trackersParent;
         
-        public CVRSystem vrSystem;
+        public CVRSystem VRSystem;
 
-        private LegIKSolver leftLegSolver;
-        private LegIKSolver rightLegSolver;
+        internal static bool IsCalibrated;
+        internal static bool IsCalibrating;
 
-        private bool isCalibrated;
-        private bool isCalibrating;
-        
+        public static List<FullBodyTracking> AllFBTs = new();
+        public static FullBodyTracking LocalFBT;
+        private static Transform referenceSkeleton;
+
+        // OpenVR device indexes are in a fixed range of 64
+        public TrackedDevicePose_t[] poses = new TrackedDevicePose_t[64];
+
+        public Dictionary<uint, TrackerState> Trackers = new();
+
         // Trackers
         public class TrackerState
         {
@@ -87,73 +84,19 @@ namespace FBTMod
             public Quaternion rotation;
         }
 
-        // OpenVR device indexes are in a fixed range of 64
-        private TrackedDevicePose_t[] poses = new TrackedDevicePose_t[64];
-        
-        private Dictionary<uint, TrackerState> trackers = new();
-        private GameObject[] debugSpheres = new GameObject[64];
-        
-        private Dictionary<TrackerRole, TrackerCalibration> trackerOffsets = new();
-        internal Dictionary<TrackerRole, Pose> runtimeTrackerTransforms = new();
-        
-        // Custom Poses
-        public class FootPoseDefinition
-        {
-            public Vector3 LeftPosition;
-            public Quaternion LeftRotation;
-
-            public Vector3 RightPosition;
-            public Quaternion RightRotation;
-
-            public float PositionMargin = 0.25f;
-            public float RotationMargin = 45f;
-        }
-
-        public class FootPoseSequence
-        {
-            public string Name;
-            public List<FootPoseDefinition> Steps = new();
-
-            public int CurrentStep;
-            public float LastStepTime;
-            public float MaxTimeBetweenSteps = 1.5f;
-
-            public float LastTriggerTime;
-            public float Cooldown = 0.25f;
-
-            public Action onStepCompleted;
-            public Action onSequenceCompleted;
-            public Action onSequenceFailed;
-
-            public bool WasInsideCurrentStep;
-        }
-
-        private List<FootPoseSequence> customPoses = new();
-        private List<FootPoseDefinition> currentRecordedPose = new();
-
         // ReplayMod Support
-
         private ReplayExtension mod;
 
-        // SETTINGS
-        private MelonPreferences_Category BodySettings;
-        private MelonPreferences_Category EyeSettings;
+        // Settings
+        public const int LEG_SOLVE_ITERATIONS = 3;
 
-        private MelonPreferences_Entry NewMoveName;
-        private MelonPreferences_Entry<bool> EnableEyeTracking;
-        private MelonPreferences_Entry<bool> ShowTrackingMarkers;
-        public static MelonPreferences_Entry<bool> ShowGazeVisualizer;
+        public const float HIP_POSITION_WEIGHT = 1f;
+        public const float HIP_ROTATION_WEIGHT = 1f;
 
-        private const int LEG_SOLVE_ITERATIONS = 3;
-        
-        private const float HIP_POSITION_WEIGHT = 1f;
-        private const float HIP_ROTATION_WEIGHT = 1f;
-        
-        private const float CHEST_POSITION_WEIGHT = 1f;
-        private const float CHEST_ROTATION_WEIGHT = 1f;
+        public const float CHEST_POSITION_WEIGHT = 1f;
+        public const float CHEST_ROTATION_WEIGHT = 1f;
 
-        private const string USER_DATA = "UserData/FullBodyTracking";
-        private const string CONFIG_FILE = "config.cfg";
+        internal const string USER_DATA = "UserData/FullBodyTracking";
         
         // ----------------------------------------------------------------
         
@@ -168,115 +111,7 @@ namespace FBTMod
             modParent = new GameObject("FBTMod").transform;
             GameObject.DontDestroyOnLoad(modParent.gameObject);
 
-            // Create UI
-            BodySettings = MelonPreferences.CreateCategory("FBTMod_FullBodySettings", "Full-Body Tracking");
-            BodySettings.SetFilePath(Path.Combine(USER_DATA, CONFIG_FILE));
-            
-            UI.CreateButtonEntry(BodySettings, "Calibrate", "Calibrate", 
-                "Starts FBT Calibration. Line yourself up with the shown pose, then press both triggers to confirm.",
-                () =>
-                {
-                    if (!isCalibrating)
-                        MelonCoroutines.Start(Calibration());
-                }
-            );
-
-            NewMoveName = BodySettings.CreateEntry("FBT_NewMoveName", "Straight", "New Move Name", "An existing rumble move name for your sequence to activate.");
-            
-            UI.CreateButtonEntry(BodySettings, "Add Current Pose", "Add Current Pose",
-                "Adds the current pose of your feet to the sequence.",
-                () =>
-                {
-                    if (!isCalibrated)
-                    {
-                        LoggerInstance.Warning("Cannot save foot pose before FBT calibration.");
-                        return;
-                    }
-            
-                    currentRecordedPose.Add(CreateFootPoseFromCurrentFeet());
-                });
-            
-            UI.CreateButtonEntry(BodySettings, "Save Current Sequence", "Save Current Sequence",
-                "Saves the current sequence of poses to allow you to hit the custom sequence. Clears stored sequence.",
-                () =>
-                {
-                    if (currentRecordedPose.Count > 0)
-                    {
-                        var sequence = new FootPoseSequence
-                        {
-                            Name = NewMoveName.BoxedEditedValue.ToString(),
-                            Steps = currentRecordedPose.ToList(),
-                            onStepCompleted = () =>
-                            {
-                                LoggerInstance.Msg("Triggered foot step");
-            
-                                var poseHitAudioCall = GameObjects.Gym.INTERACTABLES.PoseGhost.Ghost.GetGameObject().GetComponent<PoseGhost>().moveSuccessSFX;
-                                AudioManager.instance.Play(poseHitAudioCall, LocalPlayer.Controller.PlayerVR.transform.position);
-                            },
-                            
-                            onSequenceFailed = () =>
-                            {
-                                LoggerInstance.Msg("Foot step failed");
-            
-                                var poseHitAudioCall = GameObjects.Gym.INTERACTABLES.PoseGhost.Ghost.GetGameObject().GetComponent<PoseGhost>().moveTooLateSuccessSFX;
-                                AudioManager.instance.Play(poseHitAudioCall, LocalPlayer.Controller.PlayerVR.transform.position);
-                            },
-                            
-                            onSequenceCompleted = () =>
-                            {
-                                LoggerInstance.Msg("Foot sequence completed.");
-                                
-                                var straightStack = LocalPlayer.Controller.PlayerProcessor.availableStacks.ToArray().FirstOrDefault(s => s.name == NewMoveName.BoxedEditedValue.ToString());
-            
-                                if (straightStack == null)
-                                {
-                                    LoggerInstance.Warning($"No move with the name {NewMoveName.BoxedEditedValue} could be found. Did you type a matching rumble stack name?");
-                                    return;
-                                }
-            
-                                LocalPlayer.Controller.PlayerProcessor.Execute(straightStack);
-                            }
-                        };
-                        
-                        customPoses.Add(sequence);
-                        currentRecordedPose.Clear();
-                    }
-                });
-            
-            UI.CreateButtonEntry(BodySettings, "Clear Poses", "Clear Poses",
-                "Clears all custom poses.",
-                () =>
-                {
-                    customPoses.Clear();
-                });
-
-            ShowTrackingMarkers = BodySettings.CreateEntry("FBT_ShowTrackingMarkers", true, "Show Tracking Markers", "Show spheres at the location of each body tracker.");
-
-            ReplayModExtension.RecordFBT = BodySettings.CreateEntry("FBT_RecordFBT", true, "Record FBT", "Record FBT in ReplayMod");
-
-            EyeSettings = MelonPreferences.CreateCategory("FBTMod_EyeSettings", "Eye Tracking");
-            EyeSettings.SetFilePath(Path.Combine(USER_DATA, CONFIG_FILE));
-
-            EnableEyeTracking = EyeSettings.CreateEntry("FBT_EnableEyeTracking", true, "Enable Eye Tracking", "Use eye tracking if your hardware supports it.");
-            ShowGazeVisualizer = EyeSettings.CreateEntry("FBT_ShowGazeVisualizer", true, "Show Gaze Visualizer", "Show an indicator of where you are looking on the Legacy Camera.");
-
-            UI.RegisterMelon(this, BodySettings, EyeSettings);
-
-            // Create tracking spheres
-            trackersParent = new GameObject("TrackerSpheres").transform;
-            trackersParent.SetParent(modParent);
-            for (int i = 0; i < debugSpheres.Length; i++)
-            {
-                GameObject trackerSphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                trackerSphere.GetComponent<Renderer>().material = new Material(Shader.Find("Universal Render Pipeline/Lit"));
-                Object.Destroy(trackerSphere.GetComponent<Collider>());
-                trackerSphere.transform.localScale = Vector3.one * 0.2f;
-                trackerSphere.transform.SetParent(trackersParent);
-                trackerSphere.SetActive(ShowTrackingMarkers.Value);
-                debugSpheres[i] = trackerSphere;
-            }
-
-            EnableEyeTracking.OnEntryValueChanged.Subscribe(onEnableEyeTrackingToggled);
+            Config.SetUp();
 
             // Load gaze visualizer from asset bundle
             EyeTracking.GazeVisualizerPanel = GameObject.Instantiate(AssetBundles.LoadAssetFromStream<GameObject>(this, "FBTMod.assets.fbt", "GazeVisualizer"));
@@ -284,17 +119,13 @@ namespace FBTMod
             EyeTracking.GazeVisualizerMat = EyeTracking.GazeVisualizerPanel.GetComponentInChildren<Image>().material;
             EyeTracking.GazeVisualizerPanel.SetActive(false);
 
-            ShowTrackingMarkers.OnEntryValueChanged.Subscribe(onShowTrackersToggled);
-
-            ShowGazeVisualizer.OnEntryValueChanged.Subscribe(onShowGazeVisualizerToggled);
-
             EVRInitError error = EVRInitError.None;
-            vrSystem = OpenVR.Init(ref error, EVRApplicationType.VRApplication_Other);
+            VRSystem = OpenVR.Init(ref error, EVRApplicationType.VRApplication_Other);
 
             if (error != EVRInitError.None)
             {
                 LoggerInstance.Error($"[FBT] OpenVR initialization failed: {error}");
-                vrSystem = null;
+                VRSystem = null;
                 return;
             }
 
@@ -313,10 +144,10 @@ namespace FBTMod
 
         public override void OnApplicationQuit()
         {
-            if (vrSystem != null)
+            if (VRSystem != null)
             {
                 OpenVR.Shutdown();
-                vrSystem = null;
+                VRSystem = null;
             }
         }
 
@@ -324,20 +155,17 @@ namespace FBTMod
         {
             EnsureStaticObjects();
 
-            trackerOffsets.Clear();
-            runtimeTrackerTransforms.Clear();
-
-            isCalibrating = false;
-            isCalibrated = false;
-
-            leftLegSolver = null;
-            rightLegSolver = null;
-
-            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "Gym")
+            if (!globalInit && UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "Gym")
             {
-                if (EnableEyeTracking.Value) EyeTracking.Start();
-                globalInit = true;
+                RunGlobalInit();
             }
+        }
+
+        private void RunGlobalInit()
+        {
+            if (Config.EnableEyeTracking.Value) EyeTracking.Start();
+
+            globalInit = true;
         }
 
         public static void EnsureStaticObjects()
@@ -388,145 +216,30 @@ namespace FBTMod
         
         // ----------------------------------------------------------------
 
-        private static Quaternion ToLocalRotation(Transform root, Quaternion worldRot)
+        public static Quaternion ToLocalRotation(Transform root, Quaternion worldRot)
         {
             return Quaternion.Inverse(root.rotation) * worldRot;
         }
 
-        private static Quaternion ToWorldRotation(Transform root, Quaternion localRot)
+        public static Quaternion ToWorldRotation(Transform root, Quaternion localRot)
         {
             return root.rotation * localRot;
         }
         
-        // ----------------------------------------------------------------
-
-        private bool CreateLegSolvers()
-        {
-            Animator animator = LocalPlayer.Controller.PlayerAnimator.animator;
-            
-            Transform leftUpperLeg = animator.GetBoneTransform(HumanBodyBones.LeftUpperLeg);
-            Transform leftLowerLeg = animator.GetBoneTransform(HumanBodyBones.LeftLowerLeg);
-            Transform leftFoot = animator.GetBoneTransform(HumanBodyBones.LeftFoot);
-            
-            Transform rightUpperLeg = animator.GetBoneTransform(HumanBodyBones.RightUpperLeg);
-            Transform rightLowerLeg = animator.GetBoneTransform(HumanBodyBones.RightLowerLeg);
-            Transform rightFoot = animator.GetBoneTransform(HumanBodyBones.RightFoot);
-
-            if (!runtimeTrackerTransforms.TryGetValue(TrackerRole.LeftFoot, out var leftFootTarget) ||
-                !runtimeTrackerTransforms.TryGetValue(TrackerRole.RightFoot, out var rightFootTarget) ||
-                !runtimeTrackerTransforms.TryGetValue(TrackerRole.LeftKnee, out var leftKneeHint) ||
-                !runtimeTrackerTransforms.TryGetValue(TrackerRole.RightKnee, out var rightKneeHint))
-            {
-                LoggerInstance.Error("Could not create custom leg solvers. Missing FBT targets.");
-                return false;
-            }
-
-            Vector3 defaultBendDir = animator.transform.forward;
-            
-            leftLegSolver = new LegIKSolver(
-                leftUpperLeg,
-                leftLowerLeg,
-                leftFoot,
-                leftFootTarget,
-                leftKneeHint,
-                defaultBendDir
-            );
-
-            rightLegSolver = new LegIKSolver(
-                rightUpperLeg,
-                rightLowerLeg,
-                rightFoot,
-                rightFootTarget,
-                rightKneeHint,
-                defaultBendDir
-            );
-
-            leftLegSolver.Weight = 1f;
-            rightLegSolver.Weight = 1f;
-
-            LoggerInstance.Msg("Leg solvers created.");
-            return true;
-        }
-
-        private void ToggleVrikLegSolving(bool toggle)
-        {
-            var ik = LocalPlayer.Controller.PlayerIK.VrIK;
-            var value = toggle ? 1f : 0f;
-            
-            ik.solver.leftLeg.positionWeight = value;
-            ik.solver.rightLeg.positionWeight = value;
-            
-            ik.solver.leftLeg.rotationWeight = value;
-            ik.solver.rightLeg.rotationWeight = value;
-            
-            ik.solver.leftLeg.bendGoalWeight = value;
-            ik.solver.rightLeg.bendGoalWeight = value;
-        }
-        
-        // Builds target calibration points based on the current pose of the player (should be T-Pose when ran)
-        private void CreateCalibrationTargets()
-        {
-            Animator animator = LocalPlayer.Controller.PlayerAnimator.animator;
-
-            Transform hips = animator.GetBoneTransform(HumanBodyBones.Hips);
-            Transform chest = animator.GetBoneTransform(HumanBodyBones.Chest);
-            
-            Transform leftLowerLeg = animator.GetBoneTransform(HumanBodyBones.LeftLowerLeg);
-            Transform rightLowerLeg = animator.GetBoneTransform(HumanBodyBones.RightLowerLeg);
-            Transform leftFoot = animator.GetBoneTransform(HumanBodyBones.LeftFoot);
-            Transform rightFoot = animator.GetBoneTransform(HumanBodyBones.RightFoot);
-
-            Vector3 bendForward = animator.transform.forward;
-
-            Pose hipTarget = new Pose();
-            hipTarget.position = hips.position;
-            hipTarget.rotation = hips.rotation;
-
-            Pose chestTarget = new Pose();
-            chestTarget.position = chest.position;
-            chestTarget.rotation = chest.rotation;
-            
-            Pose leftKneeTarget = new Pose();
-            leftKneeTarget.position = leftLowerLeg.position + bendForward * 0.05f;
-            leftKneeTarget.rotation = leftLowerLeg.rotation;
-            
-            Pose rightKneeTarget = new Pose();
-            rightKneeTarget.position = rightLowerLeg.position + bendForward * 0.05f;
-            rightKneeTarget.rotation = rightLowerLeg.rotation;
-            
-            Pose leftFootTarget = new Pose();
-            leftFootTarget.position = leftFoot.position;
-            leftFootTarget.rotation = leftFoot.rotation;
-            
-            Pose rightFootTarget = new Pose();
-            rightFootTarget.position = rightFoot.position;
-            rightFootTarget.rotation = rightFoot.rotation;
-            
-            runtimeTrackerTransforms = new Dictionary<TrackerRole, Pose>()
-            {
-                { TrackerRole.Chest, chestTarget },
-                { TrackerRole.Hips, hipTarget },
-                { TrackerRole.LeftFoot, leftFootTarget },
-                { TrackerRole.RightFoot, rightFootTarget },
-                { TrackerRole.LeftKnee, leftKneeTarget },
-                { TrackerRole.RightKnee, rightKneeTarget }
-            };
-        }
-        
         private bool AssignNearestTrackers()
         {
-            trackerOffsets.Clear();
+            LocalFBT.TrackerOffsets.Clear();
 
             Transform root = LocalPlayer.Controller.PlayerVR.transform;
-            List<uint> available = trackers.Keys.ToList();
+            List<uint> available = Trackers.Keys.ToList();
             
             if (available.Count < 6)
             {
-                LoggerInstance.Error($"Not enough trackers for full calibration. Found {trackers.Count}, expected 6.");
+                LoggerInstance.Error($"Not enough trackers for full calibration. Found {Trackers.Count}, expected 6.");
                 return false;
             }
 
-            foreach (var pair in runtimeTrackerTransforms)
+            foreach (var pair in LocalFBT.RuntimeTrackerTransforms)
             {
                 TrackerRole role = pair.Key;
                 Pose target = pair.Value;
@@ -537,7 +250,7 @@ namespace FBTMod
 
                 foreach (uint index in available)
                 {
-                    float dist = Vector3.Distance(trackers[index].position, target.position);
+                    float dist = Vector3.Distance(Trackers[index].position, target.position);
 
                     if (dist < bestDistance)
                     {
@@ -555,13 +268,13 @@ namespace FBTMod
 
                 available.Remove(bestIndex);
 
-                Vector3 localTrackerPos = root.InverseTransformPoint(trackers[bestIndex].position);
+                Vector3 localTrackerPos = root.InverseTransformPoint(Trackers[bestIndex].position);
                 Vector3 localTargetPos = root.InverseTransformPoint(target.position);
 
-                Quaternion localTrackerRot = ToLocalRotation(root, trackers[bestIndex].rotation);
+                Quaternion localTrackerRot = ToLocalRotation(root, Trackers[bestIndex].rotation);
                 Quaternion localTargetRot = ToLocalRotation(root, target.rotation);
                 
-                trackerOffsets[role] = new TrackerCalibration
+                LocalFBT.TrackerOffsets[role] = new TrackerCalibration
                 {
                     DeviceIndex = bestIndex,
                     offset = new Pose
@@ -575,12 +288,12 @@ namespace FBTMod
             }
 
             bool hasMinimum =
-                trackerOffsets.ContainsKey(TrackerRole.Hips) &&
-                trackerOffsets.ContainsKey(TrackerRole.Chest) &&
-                trackerOffsets.ContainsKey(TrackerRole.LeftFoot) &&
-                trackerOffsets.ContainsKey(TrackerRole.RightFoot) &&
-                trackerOffsets.ContainsKey(TrackerRole.LeftKnee) &&
-                trackerOffsets.ContainsKey(TrackerRole.RightKnee);
+                LocalFBT.TrackerOffsets.ContainsKey(TrackerRole.Hips) &&
+                LocalFBT.TrackerOffsets.ContainsKey(TrackerRole.Chest) &&
+                LocalFBT.TrackerOffsets.ContainsKey(TrackerRole.LeftFoot) &&
+                LocalFBT.TrackerOffsets.ContainsKey(TrackerRole.RightFoot) &&
+                LocalFBT.TrackerOffsets.ContainsKey(TrackerRole.LeftKnee) &&
+                LocalFBT.TrackerOffsets.ContainsKey(TrackerRole.RightKnee);
 
             if (!hasMinimum)
             {
@@ -591,7 +304,7 @@ namespace FBTMod
             return true;
         }
         
-        private IEnumerator Calibration()
+        internal IEnumerator Calibration()
         {
             static bool AreBothTriggersPressed()
             {
@@ -599,8 +312,8 @@ namespace FBTMod
                        Calls.ControllerMap.RightController.GetTrigger() > 0.75f;
             }
             
-            isCalibrating = true;
-            isCalibrated = false;
+            IsCalibrating = true;
+            IsCalibrated = false;
 
             EnsureStaticObjects();
             
@@ -616,320 +329,39 @@ namespace FBTMod
             
             // Player is (hopefully) matching T-Pose, calibrate.
 
-           CreateCalibrationTargets();
+           LocalFBT.CreateCalibrationTargets();
             
             if (!AssignNearestTrackers())
             {
                 ToggleTPose(LocalPlayer.Controller, false);
-                isCalibrating = false;
+                IsCalibrating = false;
                 yield break;
             }
 
-            if (!CreateLegSolvers())
+            if (!LocalFBT.CreateLegSolvers())
             {
                 ToggleTPose(LocalPlayer.Controller, false);
-                isCalibrating = false;
+                IsCalibrating = false;
                 yield break;
             }
 
             ToggleTPose(LocalPlayer.Controller, false);
 
-            ToggleVrikLegSolving(false);
+            LocalFBT.ToggleVrikLegSolving(false);
 
-            isCalibrating = false;
-            isCalibrated = true;
+            IsCalibrating = false;
+            IsCalibrated = true;
         }
-        
-        // ----------------------------------------------------------------
-        // Custom Poses
 
-        private FootPoseDefinition CreateFootPoseFromCurrentFeet()
+        public static void OnShowTrackersToggled(bool _, bool newValue)
         {
-            Transform root = LocalPlayer.Controller.PlayerVR.transform;
-
-            Pose leftFoot = runtimeTrackerTransforms[TrackerRole.LeftFoot];
-            Pose rightFoot = runtimeTrackerTransforms[TrackerRole.RightFoot];
-            
-            return new FootPoseDefinition
+            ToggleTrackingMarkers(newValue);
+        }
+        public static void ToggleTrackingMarkers(bool enabled)
+        {
+            foreach (FullBodyTracking fbt in AllFBTs)
             {
-                LeftPosition = root.InverseTransformPoint(leftFoot.position),
-                LeftRotation = Quaternion.Inverse(root.rotation) * leftFoot.rotation,
-                
-                RightPosition = root.InverseTransformPoint(rightFoot.position),
-                RightRotation = Quaternion.Inverse(root.rotation) * rightFoot.rotation,
-                
-                PositionMargin = 0.25f,
-                RotationMargin = 45f
-            };
-        }
-
-        private bool IsInsideFootPose(FootPoseDefinition pose)
-        {
-            Transform root = LocalPlayer.Controller.PlayerVR.transform;
-
-            if (!runtimeTrackerTransforms.TryGetValue(TrackerRole.LeftFoot, out Pose leftFoot) ||
-                !runtimeTrackerTransforms.TryGetValue(TrackerRole.RightFoot, out Pose rightFoot))
-                return false;
-
-            Vector3 leftPos = root.InverseTransformPoint(leftFoot.position);
-            Quaternion leftRot = Quaternion.Inverse(root.rotation) * leftFoot.rotation;
-            
-            Vector3 rightPos = root.InverseTransformPoint(rightFoot.position);
-            Quaternion rightRot = Quaternion.Inverse(root.rotation) * rightFoot.rotation;
-
-            bool leftPositionOk =
-                Vector3.Distance(leftPos, pose.LeftPosition) <= pose.PositionMargin;
-            
-            bool rightPositionOk =
-                Vector3.Distance(rightPos, pose.RightPosition) <= pose.PositionMargin;
-
-            bool leftRotationOk =
-                Quaternion.Angle(leftRot, pose.LeftRotation) <= pose.RotationMargin;
-
-            bool rightRotationOk =
-                Quaternion.Angle(rightRot, pose.RightRotation) <= pose.RotationMargin;
-            
-            return leftPositionOk && rightPositionOk && leftRotationOk && rightRotationOk;
-        }
-
-        private void UpdateFootPoseSequence(FootPoseSequence sequence)
-        {
-            if (sequence == null || sequence.Steps.Count == 0)
-                return;
-
-            if (sequence.CurrentStep > 0 &&
-                Time.time > sequence.LastStepTime + sequence.MaxTimeBetweenSteps)
-            {
-                ResetFootPoseSequence(sequence);
-                sequence.onSequenceFailed?.Invoke();
-                return;
-            }
-
-            FootPoseDefinition currentStep = sequence.Steps[sequence.CurrentStep];
-            bool inside = IsInsideFootPose(currentStep);
-
-            if (inside && !sequence.WasInsideCurrentStep)
-            {
-                sequence.LastStepTime = Time.time;
-                sequence.CurrentStep++;
-                sequence.WasInsideCurrentStep = true;
-                sequence.onStepCompleted?.Invoke();
-
-                if (sequence.CurrentStep >= sequence.Steps.Count)
-                {
-                    if (Time.time >= sequence.LastTriggerTime + sequence.Cooldown)
-                    {
-                        sequence.LastTriggerTime = Time.time;
-                        sequence.onSequenceCompleted?.Invoke();
-                    }
-                    
-                    ResetFootPoseSequence(sequence);
-                    return;
-                }
-
-                sequence.WasInsideCurrentStep = IsInsideFootPose(sequence.Steps[sequence.CurrentStep]);
-                return;
-            }
-
-            sequence.WasInsideCurrentStep = inside;
-        }
-
-        private void ResetFootPoseSequence(FootPoseSequence sequence)
-        {
-            sequence.CurrentStep = 0;
-            sequence.LastStepTime = 0f;
-                
-            if (sequence.Steps.Count > 0)
-                sequence.WasInsideCurrentStep = IsInsideFootPose(sequence.Steps[0]);
-            else
-                sequence.WasInsideCurrentStep = false;
-        }
-        
-        // ----------------------------------------------------------------
-        // Runtime
-
-        private void UpdateRuntimeTrackers()
-        {
-            Transform root = LocalPlayer.Controller.PlayerVR.transform;
-
-            for (int i = 0; i < trackerOffsets.Count; i++)
-            {
-                var (role, calibration) = trackerOffsets.ElementAt(i);
-                
-                if (!runtimeTrackerTransforms.TryGetValue(role, out var transform))
-                    continue;
-
-                if (!trackers.TryGetValue(calibration.DeviceIndex, out var state))
-                    continue;
-                
-                Vector3 localTrackerPos = root.InverseTransformPoint(state.position);
-                Vector3 correctedLocalPos = localTrackerPos + calibration.offset.position;
-
-                transform.position = root.TransformPoint(correctedLocalPos);
-
-                Quaternion localTrackerRot = ToLocalRotation(root, state.rotation);
-                Quaternion correctedLocalRot = localTrackerRot * calibration.offset.rotation;
-
-                transform.rotation = ToWorldRotation(root, correctedLocalRot);
-
-                debugSpheres[i].transform.position = transform.position;
-                debugSpheres[i].transform.rotation = transform.rotation;
-            }
-        }
-
-        private void ApplyHipAndChestTracking()
-        {
-            if (!isCalibrated || isCalibrating)
-                return;
-
-            var animator = LocalPlayer.Controller.PlayerAnimator.animator;
-
-            if (runtimeTrackerTransforms.TryGetValue(TrackerRole.Hips, out var transform))
-            {
-                var hipsBone = animator.GetBoneTransform(HumanBodyBones.Hips);
-                hipsBone.position = Vector3.Lerp(hipsBone.position, transform.position, HIP_POSITION_WEIGHT);
-                hipsBone.rotation = Quaternion.Slerp(hipsBone.rotation, transform.rotation, HIP_ROTATION_WEIGHT);
-            }
-            if (runtimeTrackerTransforms.TryGetValue(TrackerRole.Chest, out transform))
-            {
-                var chestBone = animator.GetBoneTransform(HumanBodyBones.Chest);
-                chestBone.rotation = Quaternion.Slerp(chestBone.rotation, transform.rotation, CHEST_ROTATION_WEIGHT);
-            }
-        }
-
-        private void ApplyEyeTracking()
-        {
-            if (LocalPlayer?.Controller == null) return;
-
-            var boneDefinitions = LocalPlayer.Controller.PlayerVisuals.GetComponent<RigDefinition>().boneDefinitions;
-
-            if (EnableEyeTracking.Value && EyeTracking.IsReceivingData)
-            {
-                var leftEyeBone = boneDefinitions[32].Transform;
-                leftEyeBone.localRotation = EyeTracking.GetLeftEyeRot() * Quaternion.Euler(AA_X, AA_Y, AA_Z);
-
-                var rightEyeBone = boneDefinitions[33].Transform;
-                rightEyeBone.localRotation = EyeTracking.GetRightEyeRot() * Quaternion.Euler(AA_X, AA_Y, AA_Z);
-
-                {
-                    var leftEyelidBone = boneDefinitions[27].Transform;
-                    Quaternion closedRot = Quaternion.Euler(AA_Blink2, leftEyelidBone.localEulerAngles.y, leftEyelidBone.localEulerAngles.z);
-                    Quaternion openRot = Quaternion.Euler(AA_Blink, leftEyelidBone.localEulerAngles.y, leftEyelidBone.localEulerAngles.z);
-                    leftEyelidBone.localRotation = Quaternion.Slerp(openRot, closedRot, EyeTracking.CloseAmount);
-                }
-
-                {
-                    var rightEyelidBone = boneDefinitions[28].Transform;
-                    Quaternion closedRot = Quaternion.Euler(AA_Blink2, rightEyelidBone.localEulerAngles.y, rightEyelidBone.localEulerAngles.z);
-                    Quaternion openRot = Quaternion.Euler(AA_Blink, rightEyelidBone.localEulerAngles.y, rightEyelidBone.localEulerAngles.z);
-                    rightEyelidBone.localRotation = Quaternion.Slerp(openRot, closedRot, EyeTracking.CloseAmount);
-                }
-            }
-
-            /*
-             * Lower L: 21
-             * Lower R: 22
-             * Upper L: 27
-             * Upper R: 28
-             */
-        }
-
-        private void onEnableEyeTrackingToggled(bool _, bool newValue)
-        {
-            if (newValue) EyeTracking.Start();
-            else EyeTracking.Stop();
-        }
-        private void onShowTrackersToggled(bool _, bool newValue)
-        {
-            trackersParent?.gameObject?.SetActive(newValue);
-        }
-        private void onShowGazeVisualizerToggled(bool _, bool newValue)
-        {
-            EyeTracking.GazeVisualizerPanel?.SetActive(newValue);
-        }
-
-        public override void OnUpdate()
-        {
-            EyeTracking.Update();
-
-            if (vrSystem == null || LocalPlayer?.Controller == null)
-                return;
-            
-            vrSystem.GetDeviceToAbsoluteTrackingPose(
-                ETrackingUniverseOrigin.TrackingUniverseStanding,
-                0,
-                poses
-            );
-
-            for (uint i = 0; i < poses.Length; i++)
-            {
-                bool connected = vrSystem.IsTrackedDeviceConnected(i);
-                
-                // Avoids the HMD/Controllers
-                if (vrSystem.GetTrackedDeviceClass(i) != ETrackedDeviceClass.GenericTracker)
-                    continue;
-                
-                TrackedDevicePose_t pose = poses[i];
-                HmdMatrix34_t matrix = pose.mDeviceToAbsoluteTracking;
-
-                // Flipped on the local Z-axis
-                Vector3 position = new Vector3(
-                    matrix.m3,
-                    matrix.m7,
-                    -matrix.m11
-                );
-
-                Vector3 forward = new Vector3(
-                    -matrix.m2,
-                    -matrix.m6,
-                    matrix.m10
-                );
-
-                Vector3 up = new Vector3(
-                    matrix.m1,
-                    matrix.m5,
-                    -matrix.m9
-                );
-
-                Quaternion rotation = Quaternion.LookRotation(forward, up);
-
-                Transform root = LocalPlayer.Controller.PlayerVR.transform;
-
-                position = root.TransformPoint(position);
-                rotation = root.rotation * rotation;
-                
-                trackers[i] = new TrackerState
-                {
-                    DeviceIndex = i,
-                    position = position,
-                    rotation = rotation,
-                    IsConnected = connected
-                };
-            }
-            
-            UpdateRuntimeTrackers();
-        }
-
-        public override void OnLateUpdate()
-        {
-            ApplyEyeTracking();
-
-            if (!isCalibrated || isCalibrating)
-                return;
-
-            UpdateRuntimeTrackers();
-            ApplyHipAndChestTracking();
-
-            foreach (var pose in customPoses)
-            {
-                if (pose != null)
-                    UpdateFootPoseSequence(pose);
-            }
-
-            for (int i = 0; i < LEG_SOLVE_ITERATIONS; i++)
-            {
-                leftLegSolver?.Solve();
-                rightLegSolver?.Solve();
+                fbt.ToggleTrackingMarkers(enabled);
             }
         }
     }
@@ -940,7 +372,7 @@ namespace FBTMod
         private Transform LowerLeg;
         private Transform Foot;
 
-        private Main.Pose FootTarget;
+        public Main.Pose FootTarget;
         private Main.Pose KneeHint;
 
         public float Weight = 1f;
@@ -1054,6 +486,39 @@ namespace FBTMod
             Quaternion targetRotation = delta * bone.rotation;
 
             bone.rotation = Quaternion.Slerp(bone.rotation, targetRotation, Mathf.Clamp01(weight));
+        }
+    }
+
+    [HarmonyLib.HarmonyPatch(typeof(PlayerController), "Initialize")]
+    public static class PlayerInitPatch
+    {
+        private static void Postfix(ref Player player)
+        {
+            FullBodyTracking newFBT = player.Controller.gameObject.AddComponent<FullBodyTracking>();
+            newFBT.Owner = player.Controller;
+
+            if (player.Controller.controllerType is Il2CppRUMBLE.Players.ControllerType.Local) // If the player is you, Tracked
+            {
+                newFBT.Type = FullBodyTracking.FBTType.Tracked;
+                Main.LocalFBT = newFBT;
+            }
+            else
+            {
+                if (ReplayMod.Replay.Utilities.IsReplayClone(player.Controller)) // If player is part of a replay, Animated
+                {
+                    newFBT.Type = FullBodyTracking.FBTType.Animated;
+                }
+                else // If the player has their own tracking, Networked
+                {
+                    newFBT.Type = FullBodyTracking.FBTType.Networked;
+                }
+            }
+
+            if (newFBT.Type is FullBodyTracking.FBTType.Networked or FullBodyTracking.FBTType.Animated)
+            {
+                newFBT.CreateCalibrationTargets();
+                newFBT.CreateLegSolvers();
+            }
         }
     }
 }

@@ -34,7 +34,7 @@ namespace FBTMod
             Main.instance.LoggerInstance.Msg("Listening for eye tracking on port 9000...");
             server.Start();
 
-            GazeVisualizerPanel.SetActive(Main.ShowGazeVisualizer.EditedValue);
+            GazeVisualizerPanel.SetActive(Config.ShowGazeVisualizer.EditedValue);
 
             PlayerManager.Instance.LocalPlayer.Controller.PlayerEyeSystem.enabled = false;
         }
@@ -70,7 +70,7 @@ namespace FBTMod
                 timeLastDataReceived = Time.realtimeSinceStartup;
             receivedDataThisFrame = false;
 
-            if (Main.LocalPlayer?.Controller == null) return;
+            if (!Main.globalInit) return;
 
             Transform head = PlayerManager.Instance.LocalPlayer.Controller.PlayerVR.headset.Transform;
 
@@ -107,6 +107,17 @@ namespace FBTMod
         public static Quaternion GetRightEyeRot()
         {
             return Quaternion.Euler((RightPitch + LeftPitch) / 2f, RightYaw, 0.0f);
+        }
+
+        public static void OnEnableEyeTrackingToggled(bool _, bool newValue)
+        {
+            if (newValue) Start();
+            else Stop();
+        }
+
+        public static void OnShowGazeVisualizerToggled(bool _, bool newValue)
+        {
+            GazeVisualizerPanel?.SetActive(newValue);
         }
     }
 }
