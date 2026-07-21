@@ -7,6 +7,7 @@ using ReplayMod.Replay;
 using ReplayMod.Replay.Serialization;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using UnityEngine;
 using static FBTMod.Main;
@@ -46,19 +47,26 @@ public class ReplayModExtension
             if (!RecordFBT.Value)
                 return;
 
+            bool isLocalPlayer = false;
+
             Dictionary<byte, PoseDict> transforms = new();
             for (byte i = 0; i < ReplayMod.Core.Main.Recording.RecordedPlayers.Count; i++)
             {
                 Player player = ReplayMod.Core.Main.Recording.RecordedPlayers[i];
                 if (player == null) return;
+
+                isLocalPlayer = player.Controller.ControllerType == Il2CppRUMBLE.Players.ControllerType.Local;
+
                 FullBodyTracking fbt = player.Controller.GetComponent<FullBodyTracking>();
+                if (fbt.Disabled || fbt.Type is FullBodyTracking.FBTType.None) continue;
+
                 transforms[i] = fbt.RuntimeTrackerTransforms;
             }
 
             frame.SetExtensionData(this, new FBTState
             {
                 TrackerTransforms = transforms
-            }.Clone());
+            });
         }
 
         public override void OnWriteFrame(ReplayAPI.FrameExtensionWriter writer, Frame frame)
@@ -152,24 +160,41 @@ public class ReplayModExtension
             lastState = state;
         }
 
-        // NextFrame should be used for interpolation, though that isn't implemented here.
         public override void OnPlaybackFrame(Frame frame, Frame nextFrame)
         {
             if (!frame.TryGetExtensionData(this, out FBTState state))
                 return;
 
             if (state == null) return;
+            FBTState lerpedState = LerpStates(lastState, state, (ReplayAPI.CurrentTime - frame.Time) / (nextFrame.Time - frame.Time));
 
-            foreach (var (ownerId, poseDict) in state.TrackerTransforms)
+            foreach (var (ownerId, poseDict) in lerpedState.TrackerTransforms)
             {
                 PlayerController player = ReplayMod.Core.Main.Playback.PlaybackPlayers[ownerId].Controller;
                 FullBodyTracking fbt = player.GetComponent<FullBodyTracking>();
-                if (fbt == null || fbt.Type is not FullBodyTracking.FBTType.Animated) return;
+                if (fbt == null) return;
+                fbt.Disabled = false;
+
                 if (fbt.LeftLegSolver == null || fbt.RightLegSolver == null) return;
-                fbt.RuntimeTrackerTransforms = poseDict;
-                fbt.LeftLegSolver.FootTarget = poseDict[TrackerRole.LeftFoot];
-                fbt.RightLegSolver.FootTarget = poseDict[TrackerRole.RightFoot];
+
+                //fbt.RuntimeTrackerTransforms = poseDict;
+                //fbt.LeftLegSolver.FootTarget = poseDict[TrackerRole.LeftFoot];
+                //fbt.RightLegSolver.FootTarget = poseDict[TrackerRole.RightFoot];
             }
+        }
+
+        internal static FBTState LerpStates(FBTState a, FBTState b, float t)
+        {
+            FBTState lerpedState = a.Clone();
+            foreach (var (prev, current) in a.TrackerTransforms.Zip(b.TrackerTransforms))
+            {
+                foreach (var (prevPose, currPose) in prev.Value.Zip(current.Value))
+                {
+                    prevPose.Value.position = Vector3.Lerp(prevPose.Value.position, currPose.Value.position, t);
+                    prevPose.Value.rotation = Quaternion.Slerp(prevPose.Value.rotation, currPose.Value.rotation, t);
+                }
+            }
+            return lerpedState;
         }
     }
 

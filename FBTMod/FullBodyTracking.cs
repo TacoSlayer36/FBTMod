@@ -4,6 +4,7 @@ using MelonLoader;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.InputSystem.LowLevel;
 using Valve.VR;
 using static FBTMod.Main;
 using Pose = FBTMod.Main.Pose;
@@ -20,9 +21,11 @@ public class FullBodyTracking : MonoBehaviour
         Tracked,
         Networked,
         Animated,
-        Disabled
+        None
     }
-    public FBTType Type = FBTType.Disabled;
+    public FBTType Type = FBTType.None;
+
+    public bool Disabled = true;
 
     private Transform trackersParent;
     public LegIKSolver LeftLegSolver;
@@ -182,7 +185,7 @@ public class FullBodyTracking : MonoBehaviour
         EyeTracking.Update();
 
         if (Type is not FBTType.Tracked) return;
-        if (Type is FBTType.Disabled) return;
+        if (Type is FBTType.None) return;
         if (Main.instance.VRSystem == null) return;
         if (Owner == null) return;
 
@@ -241,7 +244,8 @@ public class FullBodyTracking : MonoBehaviour
 
     public void LateUpdate()
     {
-        if (Type is FBTType.Disabled) return;
+        if (Type is FBTType.None) return;
+        if (Disabled) return;
 
         if (Type is FBTType.Tracked && IsCalibrated && !IsCalibrating)
         {

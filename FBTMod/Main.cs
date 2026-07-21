@@ -351,6 +351,7 @@ namespace FBTMod
 
             IsCalibrating = false;
             IsCalibrated = true;
+            LocalFBT.Disabled = false;
         }
 
         public static void OnShowTrackersToggled(bool _, bool newValue)
