@@ -1,27 +1,23 @@
-﻿using Il2CppPlayFab.ClientModels;
-using Il2CppRUMBLE.Managers;
-using Il2CppRUMBLE.Players;
+﻿using Il2CppRUMBLE.Players;
 using MelonLoader;
-using ReplayMod;
 using ReplayMod.Replay;
 using ReplayMod.Replay.Serialization;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using UnityEngine;
 using static FBTMod.Main;
 using PoseDict = System.Collections.Generic.Dictionary<FBTMod.Main.TrackerRole, FBTMod.Main.Pose>;
 
 namespace FBTMod;
 
-public class ReplayModExtension
+public class FBTReplayExtension
 {
     // This example demonstrates how to extend replays by recording
     // and replaying a scene object
 
-    public static ReplayModExtension instance;
-    public ReplayModExtension() => instance = this;
+    public static FBTReplayExtension instance;
+    public FBTReplayExtension() => instance = this;
 
     // Used when reading frames to allow state to carry forward from delta-compression
     // Delta-compression is not used in this example, but is highly recommended.
@@ -34,8 +30,7 @@ public class ReplayModExtension
     private enum FBTField : byte
     {
         Position,
-        Rotation,
-        Id
+        Rotation
     }
 
     internal class FBTExtension : ReplayExtension
@@ -47,15 +42,14 @@ public class ReplayModExtension
             if (!RecordFBT.Value)
                 return;
 
-            bool isLocalPlayer = false;
+            if (ReplayMod.Core.Main.Recording.RecordedPlayers.Count == 0) return;
+            if (!ReplayAPI.IsRecording) return;
 
             Dictionary<byte, PoseDict> transforms = new();
             for (byte i = 0; i < ReplayMod.Core.Main.Recording.RecordedPlayers.Count; i++)
             {
                 Player player = ReplayMod.Core.Main.Recording.RecordedPlayers[i];
-                if (player == null) return;
-
-                isLocalPlayer = player.Controller.ControllerType == Il2CppRUMBLE.Players.ControllerType.Local;
+                if (player == null) continue;
 
                 FullBodyTracking fbt = player.Controller.GetComponent<FullBodyTracking>();
                 if (fbt.Disabled || fbt.Type is FullBodyTracking.FBTType.None) continue;
@@ -63,10 +57,12 @@ public class ReplayModExtension
                 transforms[i] = fbt.RuntimeTrackerTransforms;
             }
 
+            if (transforms.Values.Count == 0) return;
+
             frame.SetExtensionData(this, new FBTState
             {
                 TrackerTransforms = transforms
-            });
+            }.Clone());
         }
 
         public override void OnWriteFrame(ReplayAPI.FrameExtensionWriter writer, Frame frame)
@@ -119,7 +115,7 @@ public class ReplayModExtension
              * Technically, the ctor function here is unnecessary due to our lack of delta-compression,
              * but it is highly recommended to do so.
              */
-            
+
             var state = ReplaySerializer.ReadChunk<FBTState, FBTField>(
                 br,
                 () => lastState?.Clone() ?? new FBTState(),
@@ -162,13 +158,19 @@ public class ReplayModExtension
 
         public override void OnPlaybackFrame(Frame frame, Frame nextFrame)
         {
+            foreach (FullBodyTracking fbt in Main.AllFBTs)
+            {
+                if (fbt.Type is FullBodyTracking.FBTType.Animated)
+                    fbt.Disabled = true;
+            }
+
             if (!frame.TryGetExtensionData(this, out FBTState state))
                 return;
 
             if (state == null) return;
-            FBTState lerpedState = LerpStates(lastState, state, (ReplayAPI.CurrentTime - frame.Time) / (nextFrame.Time - frame.Time));
+            //FBTState lerpedState = LerpStates(state, nextFrame, (ReplayAPI.CurrentTime - frame.Time) / (nextFrame.Time - frame.Time));
 
-            foreach (var (ownerId, poseDict) in lerpedState.TrackerTransforms)
+            foreach (var (ownerId, poseDict) in state.TrackerTransforms)
             {
                 PlayerController player = ReplayMod.Core.Main.Playback.PlaybackPlayers[ownerId].Controller;
                 FullBodyTracking fbt = player.GetComponent<FullBodyTracking>();
@@ -177,9 +179,16 @@ public class ReplayModExtension
 
                 if (fbt.LeftLegSolver == null || fbt.RightLegSolver == null) return;
 
-                //fbt.RuntimeTrackerTransforms = poseDict;
-                //fbt.LeftLegSolver.FootTarget = poseDict[TrackerRole.LeftFoot];
-                //fbt.RightLegSolver.FootTarget = poseDict[TrackerRole.RightFoot];
+                fbt.RuntimeTrackerTransforms = poseDict;
+                fbt.LeftLegSolver.FootTarget = poseDict[TrackerRole.LeftFoot];
+                fbt.RightLegSolver.FootTarget = poseDict[TrackerRole.RightFoot];
+
+                foreach (var (role, tracker) in poseDict)
+                {
+                    GameObject debugSphere = fbt.debugSpheres[(int)role];
+                    if (debugSphere?.active == true)
+                        fbt.debugSpheres[(int)role].transform.position = tracker.position;
+                }
             }
         }
 

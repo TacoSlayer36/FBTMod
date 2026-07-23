@@ -31,7 +31,7 @@ public class FullBodyTracking : MonoBehaviour
     public LegIKSolver LeftLegSolver;
     public LegIKSolver RightLegSolver;
 
-    private GameObject[] debugSpheres = new GameObject[64];
+    public GameObject[] debugSpheres = new GameObject[64];
 
     public Dictionary<TrackerRole, TrackerCalibration> TrackerOffsets = new();
     public Dictionary<TrackerRole, Pose> RuntimeTrackerTransforms = new();
@@ -182,7 +182,7 @@ public class FullBodyTracking : MonoBehaviour
 
     public void Update()
     {
-        EyeTracking.Update();
+        if (Disabled) return;
 
         if (Type is not FBTType.Tracked) return;
         if (Type is FBTType.None) return;
@@ -257,11 +257,10 @@ public class FullBodyTracking : MonoBehaviour
             // INSERT NETWORKING
         }
 
-        // Animated type is handled by the ReplayMod Extension
+        // Animated type is handled by FBTReplayExtension
 
         ApplyHipAndChestTracking();
         ApplyLegTracking();
-        ApplyEyeTracking();
     }
 
     private void UpdateRuntimeTrackers()
@@ -318,42 +317,5 @@ public class FullBodyTracking : MonoBehaviour
             LeftLegSolver?.Solve();
             RightLegSolver?.Solve();
         }
-    }
-
-    private void ApplyEyeTracking()
-    {
-        if (Owner == null) return;
-
-        var boneDefinitions = Owner.PlayerVisuals.GetComponent<RigDefinition>().boneDefinitions;
-
-        if (Config.EnableEyeTracking.Value && EyeTracking.IsReceivingData)
-        {
-            var leftEyeBone = boneDefinitions[32].Transform;
-            leftEyeBone.localRotation = EyeTracking.GetLeftEyeRot() * Quaternion.Euler(AA_X, AA_Y, AA_Z);
-
-            var rightEyeBone = boneDefinitions[33].Transform;
-            rightEyeBone.localRotation = EyeTracking.GetRightEyeRot() * Quaternion.Euler(AA_X, AA_Y, AA_Z);
-
-            {
-                var leftEyelidBone = boneDefinitions[27].Transform;
-                Quaternion closedRot = Quaternion.Euler(AA_Blink2, leftEyelidBone.localEulerAngles.y, leftEyelidBone.localEulerAngles.z);
-                Quaternion openRot = Quaternion.Euler(AA_Blink, leftEyelidBone.localEulerAngles.y, leftEyelidBone.localEulerAngles.z);
-                leftEyelidBone.localRotation = Quaternion.Slerp(openRot, closedRot, EyeTracking.CloseAmount);
-            }
-
-            {
-                var rightEyelidBone = boneDefinitions[28].Transform;
-                Quaternion closedRot = Quaternion.Euler(AA_Blink2, rightEyelidBone.localEulerAngles.y, rightEyelidBone.localEulerAngles.z);
-                Quaternion openRot = Quaternion.Euler(AA_Blink, rightEyelidBone.localEulerAngles.y, rightEyelidBone.localEulerAngles.z);
-                rightEyelidBone.localRotation = Quaternion.Slerp(openRot, closedRot, EyeTracking.CloseAmount);
-            }
-        }
-
-        /*
-         * Lower L: 21
-         * Lower R: 22
-         * Upper L: 27
-         * Upper R: 28
-         */
     }
 }

@@ -37,7 +37,7 @@ internal static class Config
 
         ShowTrackingMarkers = BodySettings.CreateEntry("FBT_ShowTrackingMarkers", true, "Show Tracking Markers", "Show spheres at the location of each body tracker.");
 
-        ReplayModExtension.RecordFBT = BodySettings.CreateEntry("FBT_RecordFBT", true, "Record FBT", "Record FBT in ReplayMod");
+        FBTReplayExtension.RecordFBT = BodySettings.CreateEntry("FBT_RecordFBT", true, "Record FBT", "Record full body tracking in ReplayMod");
 
         EyeSettings = MelonPreferences.CreateCategory("FBTMod_EyeSettings", "Eye Tracking");
         EyeSettings.SetFilePath(Path.Combine(Main.USER_DATA, CONFIG_FILE));
@@ -45,10 +45,12 @@ internal static class Config
         EnableEyeTracking = EyeSettings.CreateEntry("FBT_EnableEyeTracking", true, "Enable Eye Tracking", "Use eye tracking if your hardware supports it.");
         ShowGazeVisualizer = EyeSettings.CreateEntry("FBT_ShowGazeVisualizer", true, "Show Gaze Visualizer", "Show an indicator of where you are looking on the Legacy Camera.");
 
+        ETReplayExtension.RecordET = BodySettings.CreateEntry("FBT_RecordET", true, "Record ET", "Record eye tracking in ReplayMod");
+
         UI.RegisterMelon(Main.instance, BodySettings, EyeSettings);
 
         ShowTrackingMarkers.OnEntryValueChanged.Subscribe(Main.OnShowTrackersToggled);
-        EnableEyeTracking.OnEntryValueChanged.Subscribe(EyeTracking.OnEnableEyeTrackingToggled);
-        ShowGazeVisualizer.OnEntryValueChanged.Subscribe(EyeTracking.OnShowGazeVisualizerToggled);
+        EnableEyeTracking.OnEntryValueChanged.Subscribe(Main.OnEnableEyeTrackingToggled);
+        ShowGazeVisualizer.OnEntryValueChanged.Subscribe(Main.OnShowGazeVisualizerToggled);
     }
 }

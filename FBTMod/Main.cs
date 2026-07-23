@@ -2,8 +2,12 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Linq.Expressions;
+using BuildSoft.OscCore;
+using Il2CppRUMBLE.Input;
 using Il2CppRUMBLE.Managers;
 using Il2CppRUMBLE.Players;
+using Il2CppSmartLocalization.Editor;
 using MelonLoader;
 using ReplayMod.Replay;
 using RumbleModdingAPI.RMAPI;
@@ -21,11 +25,8 @@ namespace FBTMod
 {
     public class Main : MelonMod
     {
-        public static float AA_Blink = -110f;
-        public static float AA_Blink2 = -65f;
-        public static float AA_X = 90f;
-        public static float AA_Y = 0f;
-        public static float AA_Z = 0f;
+        public static float AA_L = 10f;
+        public static float AA_R = -10f;
 
         public static Main instance;
         public Main() => instance = this;
@@ -85,7 +86,8 @@ namespace FBTMod
         }
 
         // ReplayMod Support
-        private ReplayExtension mod;
+        private ReplayExtension fbtExtension;
+        private ReplayExtension etExtension;
 
         // Settings
         public const int LEG_SOLVE_ITERATIONS = 3;
@@ -114,10 +116,10 @@ namespace FBTMod
             Config.SetUp();
 
             // Load gaze visualizer from asset bundle
-            EyeTracking.GazeVisualizerPanel = GameObject.Instantiate(AssetBundles.LoadAssetFromStream<GameObject>(this, "FBTMod.assets.fbt", "GazeVisualizer"));
-            EyeTracking.GazeVisualizerPanel.transform.SetParent(modParent);
-            EyeTracking.GazeVisualizerMat = EyeTracking.GazeVisualizerPanel.GetComponentInChildren<Image>().material;
-            EyeTracking.GazeVisualizerPanel.SetActive(false);
+            GazeVisualizerPanel = GameObject.Instantiate(AssetBundles.LoadAssetFromStream<GameObject>(this, "FBTMod.assets.fbt", "GazeVisualizer"));
+            GazeVisualizerPanel.transform.SetParent(modParent);
+            GazeVisualizerMat = GazeVisualizerPanel.GetComponentInChildren<Image>().material;
+            GazeVisualizerPanel.SetActive(false);
 
             EVRInitError error = EVRInitError.None;
             VRSystem = OpenVR.Init(ref error, EVRApplicationType.VRApplication_Other);
@@ -135,11 +137,13 @@ namespace FBTMod
         public override void OnEarlyInitializeMelon()
         {
             // ReplayMod
-            mod = ReplayAPI.RegisterExtension(new ReplayModExtension.FBTExtension());
+            //fbtExtension = ReplayAPI.RegisterExtension(new FBTReplayExtension.FBTExtension());
+            //etExtension = ReplayAPI.RegisterExtension(new ETReplayExtension.ETExtension());
 
-            ReplayAPI.onReplayEnded += _ => {
-                ReplayModExtension.lastState = null;
-            };
+            //ReplayAPI.onReplayEnded += _ => {
+            //    FBTReplayExtension.lastState = null;
+            //    ETReplayExtension.lastState = null;
+            //};
         }
 
         public override void OnApplicationQuit()
@@ -163,7 +167,7 @@ namespace FBTMod
 
         private void RunGlobalInit()
         {
-            if (Config.EnableEyeTracking.Value) EyeTracking.Start();
+            if (Config.EnableEyeTracking.Value) StartEyeTracking();
 
             globalInit = true;
         }
@@ -365,6 +369,82 @@ namespace FBTMod
                 fbt.ToggleTrackingMarkers(enabled);
             }
         }
+
+        // EYE TRACKING
+
+        public static float LocalLeftPitch = 0f;
+        public static float LocalLeftYaw = 0f;
+        public static float LocalRightPitch = 0f;
+        public static float LocalRightYaw = 0f;
+        public static float LocalCloseAmount = 0f;
+
+        public static List<EyeTracking> AllETs = new();
+        public static EyeTracking LocalET;
+
+        public static Material GazeVisualizerMat;
+        public static GameObject GazeVisualizerPanel;
+
+        public static bool ReceivedDataThisFrame = false;
+        public static float TimeLastDataReceived;
+        public static bool IsReceivingETData => Time.realtimeSinceStartup < TimeLastDataReceived + 0.25f;
+
+        internal static OscServer server;
+
+        public static void StartEyeTracking()
+        {
+            server = new OscServer(9000);
+
+            server.TryAddMethod("/tracking/eye/LeftRightPitchYaw", OnPitchYaw);
+            server.TryAddMethod("/tracking/eye/EyesClosedAmount", OnEyesClosed);
+
+            Main.instance.LoggerInstance.Msg("Listening for eye tracking on port 9000...");
+            server.Start();
+
+            GazeVisualizerPanel.SetActive(Config.ShowGazeVisualizer.EditedValue);
+
+            PlayerManager.Instance.LocalPlayer.Controller.PlayerEyeSystem.enabled = false;
+        }
+
+        public static void StopEyeTracking()
+        {
+            server.Dispose();
+            GazeVisualizerPanel.SetActive(false);
+            PlayerManager.Instance.LocalPlayer.Controller.PlayerEyeSystem.enabled = true;
+        }
+
+        static void OnPitchYaw(OscMessageValues values)
+        {
+            AA_L = 15f;
+
+            return;
+
+            LocalLeftPitch = values.ReadFloatElement(0);
+            LocalLeftYaw = values.ReadFloatElement(1);
+            LocalRightPitch = values.ReadFloatElement(2);
+            LocalRightYaw = values.ReadFloatElement(3);
+
+            ReceivedDataThisFrame = true;
+        }
+
+        static void OnEyesClosed(OscMessageValues values)
+        {
+            AA_L = 15f;
+            return;
+
+            LocalCloseAmount = Mathf.Clamp01(values.ReadFloatElement(0));
+            ReceivedDataThisFrame = true;
+        }
+
+        public static void OnEnableEyeTrackingToggled(bool _, bool newValue)
+        {
+            if (newValue) StartEyeTracking();
+            else StopEyeTracking();
+        }
+
+        public static void OnShowGazeVisualizerToggled(bool _, bool newValue)
+        {
+            GazeVisualizerPanel?.SetActive(newValue);
+        }
     }
     
     public class LegIKSolver
@@ -498,20 +578,30 @@ namespace FBTMod
             FullBodyTracking newFBT = player.Controller.gameObject.AddComponent<FullBodyTracking>();
             newFBT.Owner = player.Controller;
 
+            EyeTracking newET = player.Controller.gameObject.AddComponent<EyeTracking>();
+            newET.Owner = player.Controller;
+
             if (player.Controller.controllerType is Il2CppRUMBLE.Players.ControllerType.Local) // If the player is you, Tracked
             {
                 newFBT.Type = FullBodyTracking.FBTType.Tracked;
                 Main.LocalFBT = newFBT;
+
+                newET.Type = FullBodyTracking.FBTType.Tracked;
+                newET.Disabled = false;
+                Main.LocalET = newET;
             }
             else
             {
-                if (ReplayMod.Replay.Utilities.IsReplayClone(player.Controller)) // If player is part of a replay, Animated
+                //TODO: if (ReplayMod.Replay.Utilities.IsReplayClone(player.Controller)) // If player is part of a replay, Animated
+                if (true)
                 {
                     newFBT.Type = FullBodyTracking.FBTType.Animated;
+                    newET.Type = FullBodyTracking.FBTType.Animated;
                 }
                 else // If the player has their own tracking, Networked
                 {
                     newFBT.Type = FullBodyTracking.FBTType.Networked;
+                    newET.Type = FullBodyTracking.FBTType.Networked;
                 }
             }
 

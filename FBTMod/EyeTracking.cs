@@ -1,123 +1,173 @@
 ﻿using BuildSoft.OscCore;
 using Il2CppRUMBLE.Managers;
+using Il2CppRUMBLE.Players;
+using Il2CppRUMBLE.Players.Scaling;
 using Il2CppRUMBLE.Utilities;
+using Il2CppSteamworks;
 using MelonLoader;
 using System;
 using UnityEngine;
+using UnityEngine.Animations;
+using static FBTMod.FullBodyTracking;
 
-namespace FBTMod
+namespace FBTMod;
+
+[RegisterTypeInIl2Cpp]
+public class EyeTracking : MonoBehaviour
 {
-    internal class EyeTracking
+    public PlayerController Owner;
+
+    public float LeftPitch = 0;
+    public float RightPitch = 0;
+    public float LeftYaw = 0;
+    public float RightYaw = 0;
+    public float CloseAmount = 0;
+
+    public FBTType Type = FBTType.None;
+
+    public bool Disabled = true;
+
+    public void Start()
     {
-        public static OscServer server;
+        Main.AllETs.Add(this);
+    }
 
-        public static float LeftPitch = 0;
-        public static float RightPitch = 0;
-        public static float LeftYaw = 0;
-        public static float RightYaw = 0;
-        public static float CloseAmount = 0;
+    public void Destroy()
+    {
+        Main.AllETs.Remove(this);
+    }
 
-        public static Material GazeVisualizerMat;
-        public static GameObject GazeVisualizerPanel;
+    public void Update()
+    {
+        if (!Main.globalInit) return;
+        if (Disabled) return;
 
-        private static bool receivedDataThisFrame = false;
-        private static float timeLastDataReceived;
-        public static bool IsReceivingData => Time.realtimeSinceStartup < timeLastDataReceived + 0.25f;
-
-        public static void Start()
+        if (Type is FBTType.Tracked)
         {
-            server = new OscServer(9000);
-
-            server.TryAddMethod("/tracking/eye/LeftRightPitchYaw", OnPitchYaw);
-            server.TryAddMethod("/tracking/eye/EyesClosedAmount", OnEyesClosed);
-
-            Main.instance.LoggerInstance.Msg("Listening for eye tracking on port 9000...");
-            server.Start();
-
-            GazeVisualizerPanel.SetActive(Config.ShowGazeVisualizer.EditedValue);
-
-            PlayerManager.Instance.LocalPlayer.Controller.PlayerEyeSystem.enabled = false;
+            LeftPitch = Main.LocalLeftPitch;
+            LeftYaw = Main.LocalLeftYaw;
+            RightPitch = Main.LocalRightPitch;
+            RightYaw = Main.LocalRightYaw;
+            CloseAmount = Main.LocalCloseAmount;
         }
 
-        public static void Stop()
+        Transform head = Owner.PlayerVR.headset.Transform;
+
+        float avgPitch = (LeftPitch + RightPitch) / 2f;
+        float avgYaw = (LeftYaw + RightYaw) / 2f;
+        Vector3 lookDir = head.rotation * Quaternion.Euler(avgPitch, avgYaw * 1.2f, 0.0f) * Vector3.forward;
+
+        Vector3 lookTarget = Vector3.zero;
+        if (Physics.Raycast(head.position + lookDir * 0.4f, lookDir, out RaycastHit hit, 100f))
         {
-            server.Dispose();
-            GazeVisualizerPanel.SetActive(false);
-            PlayerManager.Instance.LocalPlayer.Controller.PlayerEyeSystem.enabled = true;
+            lookTarget = hit.point + lookDir * -0.3f;
+        }
+        else
+        {
+            lookTarget = head.transform.position + lookDir * 100f;
         }
 
-        static void OnPitchYaw(OscMessageValues values)
-        {
-            LeftPitch = values.ReadFloatElement(0);
-            LeftYaw = values.ReadFloatElement(1);
-            RightPitch = values.ReadFloatElement(2);
-            RightYaw = values.ReadFloatElement(3);
+        Vector2 screenPoint = RecordingCamera.Instance.LegacyCamera.WorldToScreenPoint(lookTarget);
 
-            receivedDataThisFrame = true;
+        float dist = Vector3.Distance(head.transform.position, lookTarget);
+
+
+        if (Type is FBTType.Tracked)
+        {
+            if (Main.ReceivedDataThisFrame)
+                Main.TimeLastDataReceived = Time.realtimeSinceStartup;
+            Main.ReceivedDataThisFrame = false;
+
+            Main.GazeVisualizerMat.SetFloat("_Darkness", 0.7f);
+            Main.GazeVisualizerMat.SetFloat("_Proportional", 1f - CloseAmount);
+            Main.GazeVisualizerMat.SetFloat("_Radius", 1f / Mathf.Clamp(dist, 2.25f, 60f) / 7.5f);
+            Main.GazeVisualizerMat.SetVector("_Center", new Vector4(screenPoint.x / Screen.width, screenPoint.y / Screen.height, 0f, 0f));
+        }
+    }
+
+    public void LateUpdate()
+    {
+        if (Disabled) return;
+
+        if (Type is FBTType.Tracked && Main.IsReceivingETData && Config.EnableEyeTracking.Value)
+        {
+            UpdateBones();
+        }
+        if (Type is FBTType.Networked)
+        {
+            // APPLY NETWORKING
+            UpdateBones();
+        }
+        if (Type is FBTType.Animated)
+        {
+            // Animation is applied by ETReplayExtension
+            UpdateBones();
+        }
+    }
+
+    public Quaternion GetLeftEyeRot()
+    {
+        return Quaternion.Euler((RightPitch + LeftPitch) / 2f, LeftYaw, 0.0f);
+    }
+
+    public Quaternion GetRightEyeRot()
+    {
+        return Quaternion.Euler((RightPitch + LeftPitch) / 2f, RightYaw, 0.0f);
+    }
+
+    public float GetCloseAmount()
+    {
+        return CloseAmount;
+    }
+
+    public void SetLeftEyeRot(Quaternion rot)
+    {
+        LeftPitch = rot.eulerAngles.x;
+        LeftYaw = rot.eulerAngles.y;
+    }
+
+    public void SetRightEyeRot(Quaternion rot)
+    {
+        RightPitch = rot.eulerAngles.x;
+        RightYaw = rot.eulerAngles.y;
+    }
+
+    public void SetCloseAmount(float closeAmount)
+    {
+        CloseAmount = closeAmount;
+    }
+
+    private void UpdateBones()
+    {
+        if (Owner == null) return;
+
+        var boneDefinitions = Owner.PlayerVisuals.GetComponent<RigDefinition>().boneDefinitions;
+
+        var leftEyeBone = boneDefinitions[32].Transform;
+        leftEyeBone.localRotation = GetLeftEyeRot() * Quaternion.Euler(90f, Main.AA_L, 0f);
+
+        var rightEyeBone = boneDefinitions[33].Transform;
+        rightEyeBone.localRotation = GetRightEyeRot() * Quaternion.Euler(90f, Main.AA_R, 0f);
+
+        {
+            var leftEyelidBone = boneDefinitions[27].Transform;
+            Quaternion closedRot = Quaternion.Euler(-110f, leftEyelidBone.localEulerAngles.y, leftEyelidBone.localEulerAngles.z);
+            Quaternion openRot = Quaternion.Euler(-65f, leftEyelidBone.localEulerAngles.y, leftEyelidBone.localEulerAngles.z);
+            leftEyelidBone.localRotation = Quaternion.Slerp(openRot, closedRot, CloseAmount);
         }
 
-        static void OnEyesClosed(OscMessageValues values)
         {
-            CloseAmount = Mathf.Clamp01(values.ReadFloatElement(0));
-            //MelonLogger.Msg($"{values.ReadFloatElement(0)},     {values.ReadFloatElement(1)},     {values.ReadFloatElement(2)}");
-
-            receivedDataThisFrame = true;
+            var rightEyelidBone = boneDefinitions[28].Transform;
+            Quaternion closedRot = Quaternion.Euler(-110f, rightEyelidBone.localEulerAngles.y, rightEyelidBone.localEulerAngles.z);
+            Quaternion openRot = Quaternion.Euler(-65f, rightEyelidBone.localEulerAngles.y, rightEyelidBone.localEulerAngles.z);
+            rightEyelidBone.localRotation = Quaternion.Slerp(openRot, closedRot, CloseAmount);
         }
 
-        public static void Update()
-        {
-            if (receivedDataThisFrame)
-                timeLastDataReceived = Time.realtimeSinceStartup;
-            receivedDataThisFrame = false;
-
-            if (!Main.globalInit) return;
-
-            Transform head = PlayerManager.Instance.LocalPlayer.Controller.PlayerVR.headset.Transform;
-
-            float avgPitch = (LeftPitch + RightPitch) / 2f;
-            float avgYaw = (LeftYaw + RightYaw) / 2f;
-            Vector3 lookDir = head.rotation * Quaternion.Euler(avgPitch, avgYaw * 1.2f, 0.0f) * Vector3.forward;
-
-            Vector3 lookTarget = Vector3.zero;
-            if (Physics.Raycast(head.position + lookDir * 0.4f, lookDir, out RaycastHit hit, 100f))
-            {
-                lookTarget = hit.point + lookDir * -0.3f;
-            }
-            else
-            {
-                lookTarget = head.transform.position + lookDir * 100f;
-            }
-
-            Vector2 screenPoint = RecordingCamera.Instance.LegacyCamera.WorldToScreenPoint(lookTarget);
-
-            float dist = Vector3.Distance(head.transform.position, lookTarget);
-
-            GazeVisualizerMat.SetFloat("_Darkness", 0.7f);
-
-            GazeVisualizerMat.SetFloat("_Proportional", 1f - CloseAmount);
-            GazeVisualizerMat.SetFloat("_Radius", 1f / Mathf.Clamp(dist, 2.25f, 60f) / 7.5f);
-            GazeVisualizerMat.SetVector("_Center", new Vector4(screenPoint.x / Screen.width, screenPoint.y / Screen.height, 0f, 0f));
-        }
-
-        public static Quaternion GetLeftEyeRot()
-        {
-            return Quaternion.Euler((RightPitch + LeftPitch) / 2f, LeftYaw, 0.0f);
-        }
-
-        public static Quaternion GetRightEyeRot()
-        {
-            return Quaternion.Euler((RightPitch + LeftPitch) / 2f, RightYaw, 0.0f);
-        }
-
-        public static void OnEnableEyeTrackingToggled(bool _, bool newValue)
-        {
-            if (newValue) Start();
-            else Stop();
-        }
-
-        public static void OnShowGazeVisualizerToggled(bool _, bool newValue)
-        {
-            GazeVisualizerPanel?.SetActive(newValue);
-        }
+        /*
+         * Lower L: 21
+         * Lower R: 22
+         * Upper L: 27
+         * Upper R: 28
+         */
     }
 }
