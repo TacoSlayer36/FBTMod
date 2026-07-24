@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
 		<TargetFramework>net6.0</TargetFramework>
@@ -20,6 +20,9 @@
 		</Reference>
 	</ItemGroup>
 
+	<Target Name="PreBuild" AfterTargets="PreBuildEvent">
+		<Exec Command="taskkill /f /t /im RUMBLE.exe 2>NUL | echo killed rumble" />
+	</Target>
 	<Target Name="PostBuild" AfterTargets="PostBuildEvent">
 		<Exec Command="copy &quot;$(TargetPath)&quot; &quot;C:\Program Files (x86)\Steam\steamapps\common\RUMBLE\Mods\$(TargetFileName)&quot;" />
 	</Target>

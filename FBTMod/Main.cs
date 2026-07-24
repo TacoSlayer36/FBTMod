@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -385,10 +386,10 @@ namespace FBTMod
         public static GameObject GazeVisualizerPanel;
 
         public static bool ReceivedDataThisFrame = false;
-        public static float TimeLastDataReceived;
-        public static bool IsReceivingETData => Time.realtimeSinceStartup < TimeLastDataReceived + 0.25f;
+        public static DateTime TimeLastDataReceived;
+        public static bool IsReceivingETData => DateTime.Now < TimeLastDataReceived.AddSeconds(0.25f);
 
-        internal static OscServer server;
+        internal static OscServer? server = null;
 
         public static void StartEyeTracking()
         {
@@ -408,30 +409,23 @@ namespace FBTMod
         public static void StopEyeTracking()
         {
             server.Dispose();
+            server = null;
             GazeVisualizerPanel.SetActive(false);
             PlayerManager.Instance.LocalPlayer.Controller.PlayerEyeSystem.enabled = true;
         }
 
         static void OnPitchYaw(OscMessageValues values)
         {
-            AA_L = 15f;
-
-            return;
-
             LocalLeftPitch = values.ReadFloatElement(0);
-            LocalLeftYaw = values.ReadFloatElement(1);
+            LocalLeftYaw = values.ReadFloatElement(1) + 10f;
             LocalRightPitch = values.ReadFloatElement(2);
-            LocalRightYaw = values.ReadFloatElement(3);
-
+            LocalRightYaw = values.ReadFloatElement(3) - 10f;
             ReceivedDataThisFrame = true;
         }
 
         static void OnEyesClosed(OscMessageValues values)
         {
-            AA_L = 15f;
-            return;
-
-            LocalCloseAmount = Mathf.Clamp01(values.ReadFloatElement(0));
+            LocalCloseAmount = values.ReadFloatElement(0);
             ReceivedDataThisFrame = true;
         }
 
