@@ -75,8 +75,8 @@ public class EyeTracking : MonoBehaviour
         if (Type is FBTType.Tracked)
         {
             //if (Main.ReceivedDataThisFrame)
-                Main.TimeLastDataReceived = DateTime.Now;
-            Main.ReceivedDataThisFrame = false;
+            //    Main.TimeLastDataReceived = DateTime.Now;
+            //Main.ReceivedDataThisFrame = false;
 
             Main.GazeVisualizerMat.SetFloat("_Darkness", 0.7f);
             Main.GazeVisualizerMat.SetFloat("_Proportional", 1f - CloseAmount);
@@ -89,7 +89,7 @@ public class EyeTracking : MonoBehaviour
     {
         if (Disabled) return;
 
-        if (Type is FBTType.Tracked && Main.IsReceivingETData && Config.EnableEyeTracking.Value)
+        if (Type is FBTType.Tracked && Config.EnableEyeTracking.Value)
         {
             UpdateBones();
         }
@@ -144,8 +144,11 @@ public class EyeTracking : MonoBehaviour
         var boneDefinitions = Owner.PlayerVisuals.GetComponent<RigDefinition>().boneDefinitions;
 
         var leftEyeBone = boneDefinitions[32].Transform;
+        leftEyeBone.transform.localRotation = GetLeftEyeRot() * Quaternion.Euler(90f, 0f, 0f);
 
         var rightEyeBone = boneDefinitions[33].Transform;
+        rightEyeBone.transform.localRotation = GetRightEyeRot() * Quaternion.Euler(90f, 0f, 0f);
+
 
         {
             var leftEyelidBone = boneDefinitions[27].Transform;

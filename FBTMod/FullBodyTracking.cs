@@ -182,8 +182,6 @@ public class FullBodyTracking : MonoBehaviour
 
     public void Update()
     {
-        if (Disabled) return;
-
         if (Type is not FBTType.Tracked) return;
         if (Type is FBTType.None) return;
         if (Main.instance.VRSystem == null) return;

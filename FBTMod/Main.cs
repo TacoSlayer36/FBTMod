@@ -138,13 +138,14 @@ namespace FBTMod
         public override void OnEarlyInitializeMelon()
         {
             // ReplayMod
-            //fbtExtension = ReplayAPI.RegisterExtension(new FBTReplayExtension.FBTExtension());
-            //etExtension = ReplayAPI.RegisterExtension(new ETReplayExtension.ETExtension());
+            fbtExtension = ReplayAPI.RegisterExtension(new FBTReplayExtension.FBTExtension());
+            etExtension = ReplayAPI.RegisterExtension(new ETReplayExtension.ETExtension());
 
-            //ReplayAPI.onReplayEnded += _ => {
-            //    FBTReplayExtension.lastState = null;
-            //    ETReplayExtension.lastState = null;
-            //};
+            ReplayAPI.onReplayEnded += _ =>
+            {
+                FBTReplayExtension.lastState = null;
+                ETReplayExtension.lastState = null;
+            };
         }
 
         public override void OnApplicationQuit()
@@ -385,11 +386,11 @@ namespace FBTMod
         public static Material GazeVisualizerMat;
         public static GameObject GazeVisualizerPanel;
 
-        public static bool ReceivedDataThisFrame = false;
-        public static DateTime TimeLastDataReceived;
-        public static bool IsReceivingETData => DateTime.Now < TimeLastDataReceived.AddSeconds(0.25f);
+        //public static bool ReceivedDataThisFrame = false;
+        //public static DateTime TimeLastDataReceived;
+        //public static bool IsReceivingETData => DateTime.Now < TimeLastDataReceived.AddSeconds(0.25f);
 
-        internal static OscServer? server = null;
+        internal static OscServer server;
 
         public static void StartEyeTracking()
         {
@@ -409,7 +410,6 @@ namespace FBTMod
         public static void StopEyeTracking()
         {
             server.Dispose();
-            server = null;
             GazeVisualizerPanel.SetActive(false);
             PlayerManager.Instance.LocalPlayer.Controller.PlayerEyeSystem.enabled = true;
         }
@@ -417,16 +417,16 @@ namespace FBTMod
         static void OnPitchYaw(OscMessageValues values)
         {
             LocalLeftPitch = values.ReadFloatElement(0);
-            LocalLeftYaw = values.ReadFloatElement(1) + 10f;
+            LocalLeftYaw = values.ReadFloatElement(1) - Config.EyeSeparationOffset.Value;
             LocalRightPitch = values.ReadFloatElement(2);
-            LocalRightYaw = values.ReadFloatElement(3) - 10f;
-            ReceivedDataThisFrame = true;
+            LocalRightYaw = values.ReadFloatElement(3) + Config.EyeSeparationOffset.Value;
+            //ReceivedDataThisFrame = true;
         }
 
         static void OnEyesClosed(OscMessageValues values)
         {
             LocalCloseAmount = values.ReadFloatElement(0);
-            ReceivedDataThisFrame = true;
+            //ReceivedDataThisFrame = true;
         }
 
         public static void OnEnableEyeTrackingToggled(bool _, bool newValue)

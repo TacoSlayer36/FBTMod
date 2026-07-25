@@ -19,6 +19,7 @@ internal static class Config
     internal static MelonPreferences_Entry<bool> EnableEyeTracking;
     internal static MelonPreferences_Entry<bool> ShowTrackingMarkers;
     internal static MelonPreferences_Entry<bool> ShowGazeVisualizer;
+    internal static MelonPreferences_Entry<float> EyeSeparationOffset;
 
     public static void SetUp()
     {
@@ -45,7 +46,8 @@ internal static class Config
         EnableEyeTracking = EyeSettings.CreateEntry("FBT_EnableEyeTracking", true, "Enable Eye Tracking", "Use eye tracking if your hardware supports it.");
         ShowGazeVisualizer = EyeSettings.CreateEntry("FBT_ShowGazeVisualizer", true, "Show Gaze Visualizer", "Show an indicator of where you are looking on the Legacy Camera.");
 
-        ETReplayExtension.RecordET = BodySettings.CreateEntry("FBT_RecordET", true, "Record ET", "Record eye tracking in ReplayMod");
+        ETReplayExtension.RecordET = EyeSettings.CreateEntry("FBT_RecordET", true, "Record ET", "Record eye tracking in ReplayMod");
+        EyeSeparationOffset = EyeSettings.CreateEntry("FBT_EyeSeparationOffset", -15f, "Eye Separation", "Offset how far apart your eyes are looking");
 
         UI.RegisterMelon(Main.instance, BodySettings, EyeSettings);
 
