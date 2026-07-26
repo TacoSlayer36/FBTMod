@@ -448,7 +448,7 @@ namespace FBTMod
         private Transform Foot;
 
         public Main.Pose FootTarget;
-        private Main.Pose KneeHint;
+        public Main.Pose KneeHint;
 
         public float Weight = 1f;
         
@@ -547,6 +547,8 @@ namespace FBTMod
             RotateBoneToPoint(UpperLeg, LowerLeg.position, solvedKneePos, Weight);
             // Simply rotates the lower leg's end point to match the (clamped) foot tracker position.
             RotateBoneToPoint(LowerLeg, Foot.position, solvedFootPos, Weight);
+
+            Foot.rotation = FootTarget.rotation;
         }
 
         private static void RotateBoneToPoint(Transform bone, Vector3 currentEndPos, Vector3 desiredEndPos, float weight)

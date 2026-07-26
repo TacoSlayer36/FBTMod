@@ -180,7 +180,9 @@ public class FBTReplayExtension
                 if (fbt.LeftLegSolver == null || fbt.RightLegSolver == null) return;
 
                 fbt.RuntimeTrackerTransforms = poseDict;
+                fbt.LeftLegSolver.KneeHint = poseDict[TrackerRole.LeftKnee];
                 fbt.LeftLegSolver.FootTarget = poseDict[TrackerRole.LeftFoot];
+                fbt.RightLegSolver.KneeHint = poseDict[TrackerRole.RightKnee];
                 fbt.RightLegSolver.FootTarget = poseDict[TrackerRole.RightFoot];
 
                 foreach (var (role, tracker) in poseDict)
@@ -188,6 +190,7 @@ public class FBTReplayExtension
                     GameObject debugSphere = fbt.debugSpheres[(int)role];
                     if (debugSphere?.active == true)
                         fbt.debugSpheres[(int)role].transform.position = tracker.position;
+                        fbt.debugSpheres[(int)role].transform.rotation = tracker.rotation;
                 }
             }
         }

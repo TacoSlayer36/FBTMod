@@ -1,10 +1,9 @@
 ﻿using Il2CppRUMBLE.Players;
-using Il2CppRUMBLE.Players.Scaling;
+using Il2CppRUMBLE.Players.Subsystems;
 using MelonLoader;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
-using UnityEngine.InputSystem.LowLevel;
 using Valve.VR;
 using static FBTMod.Main;
 using Pose = FBTMod.Main.Pose;
@@ -39,6 +38,8 @@ public class FullBodyTracking : MonoBehaviour
     public void Start()
     {
         Main.AllFBTs.Add(this);
+
+        Owner.GetSubsystem<PlayerIK>().VrIK.solver.hasLegs = false;
 
         // Create tracking spheres
         trackersParent = new GameObject("TrackerSpheres").transform;
@@ -107,9 +108,6 @@ public class FullBodyTracking : MonoBehaviour
             rightKneeHint,
             defaultBendDir
         );
-
-        LeftLegSolver.Weight = 1f;
-        RightLegSolver.Weight = 1f;
 
         Main.instance.LoggerInstance.Msg("Leg solvers created.");
         return true;
@@ -310,10 +308,7 @@ public class FullBodyTracking : MonoBehaviour
 
     private void ApplyLegTracking()
     {
-        for (int i = 0; i < LEG_SOLVE_ITERATIONS; i++)
-        {
-            LeftLegSolver?.Solve();
-            RightLegSolver?.Solve();
-        }
+        LeftLegSolver?.Solve();
+        RightLegSolver?.Solve();
     }
 }
