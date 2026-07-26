@@ -46,10 +46,10 @@ public class FullBodyTracking : MonoBehaviour
         trackersParent.SetParent(Owner.transform);
         for (int i = 0; i < debugSpheres.Length; i++)
         {
-            GameObject trackerSphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            GameObject trackerSphere = GameObject.CreatePrimitive(PrimitiveType.Capsule);
             trackerSphere.GetComponent<Renderer>().material = new Material(Shader.Find("Universal Render Pipeline/Lit"));
             GameObject.Destroy(trackerSphere.GetComponent<Collider>());
-            trackerSphere.transform.localScale = Vector3.one * 0.1f;
+            trackerSphere.transform.localScale = new Vector3(0.1f, 0.1f, 0.03f);
             trackerSphere.transform.SetParent(trackersParent);
             trackerSphere.SetActive(Config.ShowTrackingMarkers.Value);
             debugSpheres[i] = trackerSphere;
