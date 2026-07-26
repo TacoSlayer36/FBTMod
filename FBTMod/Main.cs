@@ -608,6 +608,7 @@ namespace FBTMod
             {
                 newFBT.CreateCalibrationTargets();
                 newFBT.CreateLegSolvers();
+                newFBT.ToggleVrikLegSolving(false);
             }
         }
     }

@@ -39,8 +39,6 @@ public class FullBodyTracking : MonoBehaviour
     {
         Main.AllFBTs.Add(this);
 
-        Owner.GetSubsystem<PlayerIK>().VrIK.solver.hasLegs = false;
-
         // Create tracking spheres
         trackersParent = new GameObject("TrackerSpheres").transform;
         trackersParent.SetParent(Owner.transform);
@@ -117,6 +115,8 @@ public class FullBodyTracking : MonoBehaviour
     {
         var ik = Owner.PlayerIK.VrIK;
         var value = toggle ? 1f : 0f;
+
+        Owner.GetSubsystem<PlayerIK>().VrIK.solver.hasLegs = toggle;
 
         ik.solver.leftLeg.positionWeight = value;
         ik.solver.rightLeg.positionWeight = value;
