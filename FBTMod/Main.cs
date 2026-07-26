@@ -450,6 +450,7 @@ namespace FBTMod
         public Main.Pose FootTarget;
         public Main.Pose KneeHint;
 
+        public float LegTwistWeight = 0.3f;
         public float Weight = 1f;
         
         private readonly float upperLen;
@@ -543,6 +544,8 @@ namespace FBTMod
             // Then, we move y in the knee bend direction, which is the distance perpendicular to the hip-to-foot line. This gives us the final
             // solved knee position.
 
+            // Start with the knee roughly well oriented. this is for the thigh's inline rotation
+            UpperLeg.rotation = Quaternion.Slerp(UpperLeg.rotation, KneeHint.rotation, LegTwistWeight);
             // Rotates the upper leg transform so the child joint, the knee, points toward the solved position
             RotateBoneToPoint(UpperLeg, LowerLeg.position, solvedKneePos, Weight);
             // Simply rotates the lower leg's end point to match the (clamped) foot tracker position.
